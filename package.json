@@ -2,7 +2,7 @@
   "name": "claude-dr-xiong",
   "displayName": "Dr-XIONG Claude",
   "description": "Dr-XIONG Claude for VSCode. Bring the power of Claude AI assistant directly into your coding environment.",
-  "version": "0.5.3",
+  "version": "0.5.4",
   "publisher": "drxiong",
   "engines": {
     "vscode": "^1.98.0",
