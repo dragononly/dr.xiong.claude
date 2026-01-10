@@ -1,0 +1,159 @@
+{
+  "name": "claude-dr-xiong",
+  "displayName": "Dr-XIONG Claude",
+  "description": "Dr-XIONG Claude for VSCode. Bring the power of Claude AI assistant directly into your coding environment.",
+  "version": "0.5.3",
+  "publisher": "drxiong",
+  "engines": {
+    "vscode": "^1.98.0",
+    "node": ">=18.0.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "icon": "resources/claude-logo.png",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.cjs",
+  "contributes": {
+    "configuration": {
+      "title": "Dr-XIONG Claude",
+      "properties": {
+        "claudix.selectedModel": {
+          "type": "string",
+          "default": "default",
+          "description": "The AI model for Claude Code"
+        },
+        "claudix.environmentVariables": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Environment variable name"
+              },
+              "value": {
+                "type": "string",
+                "description": "Environment variable value"
+              }
+            },
+            "required": [
+              "name",
+              "value"
+            ]
+          },
+          "default": [],
+          "description": "Environment variables to set when launching Claude"
+        }
+      }
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "claudix-chat-sidebar",
+          "title": "Dr-XIONG Claude",
+          "icon": "resources/claude-logo.svg"
+        }
+      ]
+    },
+    "views": {
+      "claudix-chat-sidebar": [
+        {
+          "icon": "resources/claude-logo.svg",
+          "type": "webview",
+          "id": "claudix.chatView",
+          "name": "Dr-XIONG Claude"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "claudix.showChat",
+        "title": "Show Dr-XIONG Claude"
+      },
+      {
+        "command": "claudix.openChatInEditor",
+        "title": "Dr-XIONG Claude: Open Chat in Editor"
+      },
+      {
+        "command": "claudix.openSettings",
+        "title": "Dr-XIONG Claude: Open Settings"
+      }
+    ]
+  },
+  "scripts": {
+    "dev": "concurrently \"pnpm run dev:webview\" \"pnpm run watch:extension\"",
+    "dev:webview": "vite --config src/webview/vite.config.ts --port 5173 --strictPort",
+    "build:extension": "tsx esbuild.ts --production",
+    "build:webview": "vite build --config src/webview/vite.config.ts",
+    "build": "pnpm run build:webview && pnpm run build:extension",
+    "watch:extension": "tsx esbuild.ts --watch",
+    "watch:webview": "vite build --config src/webview/vite.config.ts --watch",
+    "watch": "concurrently \"pnpm run watch:extension\" \"pnpm run watch:webview\"",
+    "test": "vitest --run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "typecheck:webview": "vue-tsc -p src/webview/tsconfig.json --noEmit",
+    "typecheck:all": "pnpm run typecheck && pnpm run typecheck:webview",
+    "prepackage": "pnpm run build && cp README.md README.md.bak && sed -i '' 's|https://awesome.re/mentioned-badge.svg|assets/mentioned-badge.png|g' README.md",
+    "package": "vsce package --no-dependencies",
+    "postpackage": "mv README.md.bak README.md",
+    "lint": "eslint src --ext ts",
+    "lint:fix": "eslint src --ext ts --fix",
+    "format": "prettier --write \"src/**/*.{ts,tsx,vue}\" && eslint src --ext ts,tsx,vue --fix"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.1.17",
+    "@types/node": "^24.10.1",
+    "@types/vscode": "^1.98.0",
+    "@typescript-eslint/eslint-plugin": "^8.48.1",
+    "@typescript-eslint/parser": "^8.48.1",
+    "@vitejs/plugin-vue": "^6.0.2",
+    "@vscode/vsce": "^3.7.1",
+    "concurrently": "^9.2.1",
+    "esbuild": "^0.27.1",
+    "eslint": "^9.39.1",
+    "prettier": "^3.7.4",
+    "tailwindcss": "^4.1.17",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vite": "^7.2.7",
+    "vite-plugin-svg-icons": "^2.0.1",
+    "vitest": "^4.0.15",
+    "vue-tsc": "^3.1.7"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "^0.1.76",
+    "@anthropic-ai/sdk": "^0.71.2",
+    "@gn8/alien-signals-vue": "^0.1.1",
+    "@mdi/font": "^7.4.47",
+    "@modelcontextprotocol/sdk": "^1.24.3",
+    "@vscode/codicons": "^0.0.43",
+    "@vueuse/core": "^14.1.0",
+    "alien-signals": "^3.1.1",
+    "fuse.js": "^7.1.0",
+    "lexical": "^0.38.2",
+    "lexical-vue": "^0.14.1",
+    "marked": "^17.0.1",
+    "motion-v": "^1.7.4",
+    "path-browserify-esm": "^1.0.6",
+    "pinia": "^3.0.4",
+    "vue": "^3.5.25",
+    "zod": "^3.25.76"
+  },
+  "keywords": [
+    "vscode",
+    "extension",
+    "claude",
+    "ai",
+    "coding-assistant"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Haleclipse/Claudix"
+  },
+  "license": "AGPL-3.0"
+}

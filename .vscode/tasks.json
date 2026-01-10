@@ -1,0 +1,91 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Dev: Watch Extension",
+      "type": "npm",
+      "script": "watch:extension",
+      "group": "build",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "esbuild",
+        "fileLocation": ["relative", "${workspaceFolder}"],
+        "pattern": [
+          {
+            "regexp": "^✘ \\[ERROR\\] (.*)$",
+            "message": 1
+          },
+          {
+            "regexp": "^\\s+(.+):(\\d+):(\\d+):$",
+            "file": 1,
+            "line": 2,
+            "column": 3
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[watch\\] build started",
+          "endsPattern": "^\\[watch\\] build finished"
+        }
+      }
+    },
+    {
+      "label": "Dev: Vite Dev Server",
+      "type": "npm",
+      "script": "dev:webview",
+      "isBackground": true,
+      "problemMatcher": {
+        "owner": "vite",
+        "pattern": {
+          "regexp": ".*"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*VITE v[0-9].*",
+          "endsPattern": ".*Local:\\s*https?://.*"
+        }
+      }
+    },
+    {
+      "label": "Dev: Full (Vite + Watch)",
+      "dependsOn": [
+        "Dev: Vite Dev Server",
+        "Dev: Watch Extension"
+      ],
+      "dependsOrder": "parallel",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Build: Extension",
+      "type": "npm",
+      "script": "build:extension",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Build: Webview",
+      "type": "npm",
+      "script": "build:webview",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "Build: All",
+      "type": "npm",
+      "script": "build",
+      "group": "build",
+      "problemMatcher": []
+    },
+    {
+      "label": "PreLaunch: Build All",
+      "dependsOn": [
+        "Build: Webview",
+        "Build: Extension"
+      ],
+      "dependsOrder": "sequence"
+    }
+  ]
+}
