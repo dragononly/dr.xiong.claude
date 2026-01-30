@@ -44,6 +44,7 @@
 <script setup lang="ts">
 import { computed } from 'vue';
 import ToolMessageWrapper from './common/ToolMessageWrapper.vue';
+import { formatToolInput, formatToolOutput, formatErrorContent } from '@/utils/formatUtils';
 
 interface Props {
   toolUse?: any;
@@ -82,7 +83,7 @@ const hasInput = computed(() => {
 
 const formattedInput = computed(() => {
   const input = props.toolUse?.input || props.toolUseResult?.input;
-  return JSON.stringify(input, null, 2);
+  return formatToolInput(input);
 });
 
 // 输出结果
@@ -105,43 +106,12 @@ const hasOutput = computed(() => {
 const formattedOutput = computed(() => {
   // 会话加载
   if (props.toolUseResult?.output) {
-    return typeof props.toolUseResult.output === 'string'
-      ? props.toolUseResult.output
-      : JSON.stringify(props.toolUseResult.output, null, 2);
+    return formatToolOutput(props.toolUseResult.output);
   }
 
   // 实时对话 - 解析content
   if (props.toolResult?.content) {
-    const content = props.toolResult.content;
-
-    if (Array.isArray(content)) {
-      // content是数组格式，提取text内容
-      const textContent = content
-        .filter((item: any) => item.type === 'text')
-        .map((item: any) => item.text)
-        .join('\n');
-
-      // 尝试格式化JSON
-      try {
-        const parsed = JSON.parse(textContent);
-        return JSON.stringify(parsed, null, 2);
-      } catch {
-        return textContent;
-      }
-    }
-
-    // 如果是字符串，尝试格式化
-    if (typeof content === 'string') {
-      try {
-        const parsed = JSON.parse(content);
-        return JSON.stringify(parsed, null, 2);
-      } catch {
-        return content;
-      }
-    }
-
-    // 其他情况直接JSON化
-    return JSON.stringify(content, null, 2);
+    return formatToolOutput(props.toolResult.content);
   }
 
   return '';
@@ -150,21 +120,7 @@ const formattedOutput = computed(() => {
 // 错误信息
 const errorMessage = computed(() => {
   if (!props.toolResult?.is_error) return '';
-
-  const content = props.toolResult.content;
-
-  if (typeof content === 'string') {
-    return content;
-  }
-
-  if (Array.isArray(content)) {
-    return content
-      .filter((item: any) => item.type === 'text')
-      .map((item: any) => item.text)
-      .join('\n');
-  }
-
-  return JSON.stringify(content, null, 2);
+  return formatErrorContent(props.toolResult.content);
 });
 
 // 是否自动展开

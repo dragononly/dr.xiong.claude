@@ -4,8 +4,11 @@
 
 import * as vscode from 'vscode';
 import { InstantiationServiceBuilder } from './di/instantiationServiceBuilder';
-import { registerServices, ILogService, IClaudeAgentService, IWebViewService } from './services/serviceRegistry';
+import { registerServices, ILogService, IClaudeAgentService, IWebViewService, IToolRegistry, IClaudeConfigService } from './services/serviceRegistry';
 import { VSCodeTransport } from './services/claude/transport/VSCodeTransport';
+import { WorkspaceInitService } from './services/WorkspaceInitService';
+import { initializeBuiltinTools } from './services/toolInitializer';
+import { registerDiagnoseApiKeyStorageCommand } from './commands/diagnoseApiKeyStorage';
 
 /**
  * Extension Activation
@@ -20,7 +23,7 @@ export function activate(context: vscode.ExtensionContext) {
 	// 3. Seal the builder and create DI container
 	const instantiationService = builder.seal();
 
-	// 4. Log activation
+	// 4. Log activation and initialize tools
 	instantiationService.invokeFunction(accessor => {
 		const logService = accessor.get(ILogService);
 		logService.info('');
@@ -28,6 +31,14 @@ export function activate(context: vscode.ExtensionContext) {
 		logService.info('║         Claude Chat 扩展已激活           ║');
 		logService.info('╚════════════════════════════════════════╝');
 		logService.info('');
+
+		// 初始化工作区配置文件
+		const workspaceInitService = new WorkspaceInitService(logService);
+		workspaceInitService.initialize();
+
+		// 初始化内置工具
+		const toolRegistry = accessor.get(IToolRegistry);
+		initializeBuiltinTools(toolRegistry, logService);
 	});
 
 	// 5. Connect services
@@ -35,11 +46,27 @@ export function activate(context: vscode.ExtensionContext) {
 		const logService = accessor.get(ILogService);
 		const webViewService = accessor.get(IWebViewService);
 		const claudeAgentService = accessor.get(IClaudeAgentService);
+		const claudeConfigService = accessor.get(IClaudeConfigService);
 		const subscriptions = context.subscriptions;
+
+		// 注册诊断命令
+		registerDiagnoseApiKeyStorageCommand(context, claudeConfigService);
+		logService.info('✓ API Key 存储诊断命令已注册');
+
+		// 检查 API Key 是否配置（首次使用提示）
+		import('./services/claudeConfigService').then(async ({ ClaudeConfigService }) => {
+			const configService = new ClaudeConfigService();
+			const apiKey = await configService.getApiKey();
+			if (!apiKey) {
+				logService.warn('[Extension] API Key 未配置，将在用户首次使用时提示');
+			} else {
+				logService.info('[Extension] ✓ API Key 已配置');
+			}
+		});
 
 		// Register WebView View Provider
 		const webviewProvider = vscode.window.registerWebviewViewProvider(
-			'claudix.chatView',
+			'xiong.chatView',
 			webViewService,
 			{
 				webviewOptions: {
@@ -72,7 +99,7 @@ export function activate(context: vscode.ExtensionContext) {
 		// Register disposables
 		context.subscriptions.push(webviewProvider);
 		context.subscriptions.push(
-			vscode.commands.registerCommand('claudix.openSettings', async () => {
+			vscode.commands.registerCommand('xiong.openSettings', async () => {
 				await instantiationService.invokeFunction(accessorInner => {
 					const webViewServiceInner = accessorInner.get(IWebViewService);
 					const logServiceInner = accessorInner.get(ILogService);
@@ -87,7 +114,7 @@ export function activate(context: vscode.ExtensionContext) {
 		);
 
 		context.subscriptions.push(
-			vscode.commands.registerCommand('claudix.openChatInEditor', async () => {
+			vscode.commands.registerCommand('xiong.openChatInEditor', async () => {
 				await instantiationService.invokeFunction(accessorInner => {
 					const webViewServiceInner = accessorInner.get(IWebViewService);
 					const logServiceInner = accessorInner.get(ILogService);
@@ -108,8 +135,8 @@ export function activate(context: vscode.ExtensionContext) {
 	});
 
 	// 6. Register commands
-	const showChatCommand = vscode.commands.registerCommand('claudix.showChat', () => {
-		vscode.commands.executeCommand('claudix.chatView.focus');
+	const showChatCommand = vscode.commands.registerCommand('xiong.showChat', () => {
+		vscode.commands.executeCommand('xiong.chatView.focus');
 	});
 
 	context.subscriptions.push(showChatCommand);

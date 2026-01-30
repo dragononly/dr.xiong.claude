@@ -8,56 +8,86 @@
         <h2 class="settings-title">设置</h2>
       </div>
 
-      <!-- API Key 设置 -->
+      <!-- API 设置 -->
       <section class="settings-section">
-        <h3 class="section-title">API 密钥</h3>
-        <div class="api-key-row">
+        <h3 class="section-title">API 设置</h3>
+
+        <!-- API Key -->
+        <div class="setting-row">
+          <label class="setting-label">API 密钥</label>
           <div class="input-wrapper">
             <input
               v-model="apiKeyInput"
               :type="showApiKey ? 'text' : 'password'"
               :placeholder="currentApiKey || '请输入 API Key'"
-              class="api-key-input"
+              class="setting-input"
             />
             <button @click="showApiKey = !showApiKey" class="toggle-btn" title="切换显示">
               <span v-if="showApiKey">隐藏</span>
               <span v-else>显示</span>
             </button>
           </div>
-          <button @click="saveApiKey" class="save-btn" :disabled="saving">
-            {{ saving ? '保存中...' : '保存' }}
-          </button>
         </div>
-        <p v-if="apiKeySaveStatus" class="status-message" :class="apiKeySaveStatus.success ? 'success' : 'error'">
-          {{ apiKeySaveStatus.message }}
-        </p>
-        <p v-if="currentApiKey" class="current-key-hint">
+        <p v-if="currentApiKey" class="current-value-hint">
           当前密钥: {{ currentApiKey }}
         </p>
-      </section>
 
-      <!-- Base URL 设置 -->
-      <section class="settings-section">
-        <h3 class="section-title">API 地址</h3>
-        <div class="api-key-row">
+        <!-- Base URL -->
+        <div class="setting-row">
+          <label class="setting-label">API 地址</label>
           <div class="input-wrapper">
             <input
               v-model="baseUrlInput"
               type="text"
-              :placeholder="currentBaseUrl || DEFAULT_BASE_URL"
-              class="api-key-input"
+              placeholder="请输入 API 地址"
+              class="setting-input"
             />
           </div>
-          <button @click="saveBaseUrl" class="save-btn" :disabled="savingBaseUrl">
-            {{ savingBaseUrl ? '保存中...' : '保存' }}
+        </div>
+        <p class="current-value-hint">
+          默认地址: {{ DEFAULT_BASE_URL }}
+        </p>
+
+        <!-- 保存按钮 -->
+        <div class="save-section">
+          <button @click="saveAllSettings" class="save-btn" :disabled="saving">
+            {{ saving ? '保存中...' : '保存设置' }}
           </button>
         </div>
-        <p v-if="baseUrlSaveStatus" class="status-message" :class="baseUrlSaveStatus.success ? 'success' : 'error'">
-          {{ baseUrlSaveStatus.message }}
+
+        <p v-if="saveStatus" class="status-message" :class="saveStatus.success ? 'success' : 'error'">
+          {{ saveStatus.message }}
         </p>
-        <p class="current-key-hint">
-          当前地址: {{ currentBaseUrl || DEFAULT_BASE_URL }}
-        </p>
+      </section>
+
+      <!-- 环境检测 -->
+      <section class="settings-section">
+        <h3 class="section-title">环境检测</h3>
+        <button @click="refreshEnvironment" class="refresh-btn" :disabled="loadingEnvironment">
+          {{ loadingEnvironment ? '检测中...' : '重新检测' }}
+        </button>
+
+        <div v-if="environmentCheck" class="info-card">
+          <div class="info-row">
+            <span class="info-label">Claude CLI:</span>
+            <span class="info-value">
+              {{ environmentCheck.claudeCode.installed ? '已检测到' : '未检测到' }}
+              <span v-if="environmentCheck.claudeCode.version">（{{ environmentCheck.claudeCode.version }}）</span>
+            </span>
+          </div>
+          <div v-if="environmentCheck.claudeCode.path" class="info-row">
+            <span class="info-label">CLI 路径:</span>
+            <span class="info-value">{{ environmentCheck.claudeCode.path }}</span>
+          </div>
+          <div class="info-row">
+            <span class="info-label">Git:</span>
+            <span class="info-value">
+              {{ environmentCheck.git.installed ? '已检测到' : '未检测到' }}
+              <span v-if="environmentCheck.git.version">（{{ environmentCheck.git.version }}）</span>
+            </span>
+          </div>
+        </div>
+        <p v-else class="hint-text">点击“重新检测”查看环境信息</p>
       </section>
 
       <!-- 账户余额 -->
@@ -102,6 +132,14 @@
         </div>
         <p v-else-if="usageError" class="status-message error">{{ usageError }}</p>
       </section>
+
+      <!-- 帮助信息 -->
+      <section class="settings-section help-section">
+        <h3 class="section-title">💡 联系作者</h3>
+        <div class="help-content">
+          <p><strong>QQ：494588788</strong></p>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -113,20 +151,20 @@ import { RuntimeKey } from '../composables/runtimeContext';
 const runtime = inject(RuntimeKey);
 
 // 默认 Base URL
-const DEFAULT_BASE_URL = 'http://serve2.moono.vip:3011';
+const DEFAULT_BASE_URL = 'http://aiapi3.moono.vip:3010';
 
 // API Key
 const apiKeyInput = ref('');
 const currentApiKey = ref<string | null>(null);
-const showApiKey = ref(false);
-const saving = ref(false);
-const apiKeySaveStatus = ref<{ success: boolean; message: string } | null>(null);
+const showApiKey = ref(true); // 默认显示
 
 // Base URL
 const baseUrlInput = ref('');
 const currentBaseUrl = ref<string | null>(null);
-const savingBaseUrl = ref(false);
-const baseUrlSaveStatus = ref<{ success: boolean; message: string } | null>(null);
+
+// 保存状态
+const saving = ref(false);
+const saveStatus = ref<{ success: boolean; message: string } | null>(null);
 
 // 账户余额
 const balance = ref<number | null>(null);
@@ -145,80 +183,186 @@ const usage = ref<{
 const usageError = ref<string | null>(null);
 const loadingUsage = ref(false);
 
-onMounted(async () => {
-  // 获取当前 API Key（脱敏）和 Base URL
+// 环境检测
+const environmentCheck = ref<{
+  claudeCode: { installed: boolean; version?: string; path?: string };
+  git: { installed: boolean; version?: string };
+  allReady: boolean;
+} | null>(null);
+const loadingEnvironment = ref(false);
+
+async function refreshEnvironment() {
   if (!runtime) return;
+  loadingEnvironment.value = true;
   try {
     const connection = await runtime.connectionManager.get();
-    const response = await connection.getClaudeConfig();
-    if (response.config) {
-      currentApiKey.value = response.config.apiKey;
-      currentBaseUrl.value = response.config.baseUrl;
-    }
+    environmentCheck.value = await connection.checkEnvironment();
   } catch (error) {
-    console.error('Failed to get Claude config:', error);
-  }
-});
-
-async function saveApiKey() {
-  if (!apiKeyInput.value.trim()) {
-    apiKeySaveStatus.value = { success: false, message: '请输入 API Key' };
-    return;
-  }
-  if (!runtime) return;
-
-  saving.value = true;
-  apiKeySaveStatus.value = null;
-
-  try {
-    const connection = await runtime.connectionManager.get();
-    const response = await connection.setApiKey(apiKeyInput.value.trim());
-
-    if (response.success) {
-      apiKeySaveStatus.value = { success: true, message: 'API Key 保存成功，重启会话后生效' };
-      apiKeyInput.value = '';
-      // 刷新显示
-      const configResponse = await connection.getClaudeConfig();
-      if (configResponse.config) {
-        currentApiKey.value = configResponse.config.apiKey;
-      }
-    } else {
-      apiKeySaveStatus.value = { success: false, message: response.error || '保存失败' };
-    }
-  } catch (error) {
-    apiKeySaveStatus.value = { success: false, message: String(error) };
+    console.error('[SettingsPage] 环境检测失败:', error);
+    environmentCheck.value = null;
   } finally {
-    saving.value = false;
+    loadingEnvironment.value = false;
   }
 }
 
-async function saveBaseUrl() {
+onMounted(async () => {
+  // 获取当前 API Key 和 Base URL（优先从 VSCode 配置 xiong.apiKey/xiong.baseUrl 读取）
+  console.log('[SettingsPage] onMounted 开始获取配置');
+  if (!runtime) {
+    console.error('[SettingsPage] runtime 不存在');
+    return;
+  }
+  try {
+    const connection = await runtime.connectionManager.get();
+    console.log('[SettingsPage] 获取 connection 成功，调用 getClaudeConfig...');
+    const response = await connection.getClaudeConfig();
+    console.log('[SettingsPage] getClaudeConfig 响应:', JSON.stringify(response, null, 2));
+    if (response.config) {
+      currentApiKey.value = response.config.apiKey;
+      currentBaseUrl.value = response.config.baseUrl;
+
+      // 自动填充输入框（从 VSCode 配置 xiong.apiKey / xiong.baseUrl 读取）
+      // API Key: 如果有值，自动填充到输入框
+      apiKeyInput.value = response.config.apiKey || '';
+      // Base URL: 优先使用当前配置值，否则使用默认值
+      baseUrlInput.value = response.config.baseUrl || DEFAULT_BASE_URL;
+      // CLI Path: 如果有值，自动填充到输入框
+      
+      console.log('[SettingsPage] 已填充: apiKeyInput=', apiKeyInput.value ? '有值' : '空', ', baseUrlInput=', baseUrlInput.value);
+    }
+  } catch (error) {
+    console.error('[SettingsPage] Failed to get Claude config:', error);
+  }
+
+  await refreshEnvironment();
+});
+
+async function saveAllSettings() {
   if (!runtime) return;
 
-  savingBaseUrl.value = true;
-  baseUrlSaveStatus.value = null;
+  // 验证：至少需要填写一项
+  const hasApiKey = apiKeyInput.value.trim();
+  const hasBaseUrl = baseUrlInput.value.trim();
+  if (!hasApiKey && !hasBaseUrl) {
+    saveStatus.value = { success: false, message: '请至少填写一项设置' };
+    return;
+  }
+
+  saving.value = true;
+  saveStatus.value = null;
+
+  console.log('[Settings] 开始保存设置...');
 
   try {
     const connection = await runtime.connectionManager.get();
-    // 如果输入为空，使用默认值
-    const urlToSave = baseUrlInput.value.trim() || DEFAULT_BASE_URL;
-    const response = await connection.setBaseUrl(urlToSave);
 
-    if (response.success) {
-      baseUrlSaveStatus.value = { success: true, message: 'API 地址保存成功，重启会话后生效' };
-      baseUrlInput.value = '';
-      // 刷新显示
-      const configResponse = await connection.getClaudeConfig();
-      if (configResponse.config) {
-        currentBaseUrl.value = configResponse.config.baseUrl;
+    // 0. 检查环境（Claude Code CLI 和 Git）
+    console.log('[Settings] 检查环境...');
+    saveStatus.value = { success: true, message: '正在检查环境...' };
+
+    const envCheck = await connection.checkEnvironment();
+
+    if (!envCheck.claudeCode.installed) {
+      console.warn('[Settings] 未检测到 Claude Code CLI，将继续保存设置');
+      saveStatus.value = {
+        success: true,
+        message: '⚠ 未检测到 Claude Code CLI，仍将保存设置（可选安装）。'
+      };
+    }
+
+    if (!envCheck.git.installed) {
+      console.warn('[Settings] 未检测到 Git，将继续保存设置');
+      saveStatus.value = {
+        success: true,
+        message: '⚠ 未检测到 Git，仍将保存设置（部分功能可能受限）。'
+      };
+    }
+
+    console.log(`[Settings] 环境检查通过: Claude=${envCheck.claudeCode.version}, Git=${envCheck.git.version}`);
+
+    // 1. 保存 API Key（如果填写了）
+    if (hasApiKey) {
+      console.log('[Settings] 保存 API Key...');
+      saveStatus.value = { success: true, message: '正在保存 API Key...' };
+
+      const timeoutPromise = new Promise<{ success: boolean; error?: string }>((_, reject) => {
+        setTimeout(() => reject(new Error('请求超时（15秒），请重试')), 15000);
+      });
+
+      const keyResponse = await Promise.race([
+        connection.setApiKey(apiKeyInput.value.trim()),
+        timeoutPromise
+      ]) as { success: boolean; error?: string };
+
+      if (!keyResponse.success) {
+        throw new Error(keyResponse.error || 'API Key 保存失败');
+      }
+
+      console.log('[Settings] API Key 保存成功');
+    }
+
+    // 2. 保存 Base URL（如果填写了）
+    if (hasBaseUrl) {
+      console.log('[Settings] 保存 Base URL...');
+      saveStatus.value = { success: true, message: '正在保存 API 地址...' };
+
+      // 清理 URL：去除首尾空格，去除尾部的斜杠
+      let urlToSave = baseUrlInput.value.trim();
+      urlToSave = urlToSave.replace(/\/+$/, ''); // 去除尾部斜杠
+
+      const urlResponse = await connection.setBaseUrl(urlToSave);
+
+      if (!urlResponse.success) {
+        throw new Error(urlResponse.error || 'Base URL 保存失败');
+      }
+
+      console.log('[Settings] Base URL 保存成功');
+    }
+
+    // 3. 刷新显示
+    const configResponse = await connection.getClaudeConfig();
+    if (configResponse.config) {
+      currentApiKey.value = configResponse.config.apiKey;
+      currentBaseUrl.value = configResponse.config.baseUrl;
+    }
+
+    // 清空输入框
+    apiKeyInput.value = '';
+    baseUrlInput.value = currentBaseUrl.value || DEFAULT_BASE_URL;
+
+    // 自动重启当前会话，让新配置立即生效
+    const activeSession = runtime.sessionStore.activeSession();
+    if (activeSession) {
+      console.log('[Settings] 发现活跃会话，尝试重启...');
+      saveStatus.value = { success: true, message: '✓ 设置保存成功，正在重启会话...' };
+      try {
+        await activeSession.restartClaude();
+        console.log('[Settings] 会话重启成功');
+        saveStatus.value = { success: true, message: '✓ 设置保存成功，会话已重启！现在可以开始聊天了。' };
+      } catch (restartError) {
+        console.error('[Settings] 重启会话失败:', restartError);
+        saveStatus.value = { success: true, message: '✓ 设置保存成功！请新建会话开始聊天。' };
       }
     } else {
-      baseUrlSaveStatus.value = { success: false, message: response.error || '保存失败' };
+      console.log('[Settings] 没有活跃会话');
+      saveStatus.value = { success: true, message: '✓ 设置保存成功！请新建会话开始聊天。' };
     }
+
+    await refreshEnvironment();
   } catch (error) {
-    baseUrlSaveStatus.value = { success: false, message: String(error) };
+    console.error('[Settings] 保存设置异常:', error);
+
+    const errorMsg = error instanceof Error
+      ? error.message
+      : '未知错误。请按 F12 查看控制台日志';
+
+    saveStatus.value = {
+      success: false,
+      message: errorMsg
+    };
   } finally {
-    savingBaseUrl.value = false;
+    saving.value = false;
+    console.log('[Settings] 保存流程结束');
   }
 }
 
@@ -309,18 +453,22 @@ async function fetchUsage() {
   justify-content: center;
   width: 32px;
   height: 32px;
-  border: none;
-  background: transparent;
+  border: 1px solid transparent;
+  /* 毛玻璃效果 */
+  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
   color: var(--vscode-foreground);
-  border-radius: 4px;
+  border-radius: 8px;
   cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.15s, background-color 0.15s;
+  opacity: 0.8;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .back-btn:hover {
   opacity: 1;
-  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  background: color-mix(in srgb, var(--vscode-foreground) 15%, transparent);
+  border-color: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+  transform: translateX(-2px);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--vscode-widget-shadow) 20%, transparent);
 }
 
 .back-btn .codicon {
@@ -330,9 +478,19 @@ async function fetchUsage() {
 .settings-section {
   margin-bottom: 32px;
   padding: 16px;
-  background: var(--vscode-input-background);
-  border-radius: 8px;
-  border: 1px solid var(--vscode-input-border, transparent);
+  /* 毛玻璃效果 */
+  background: color-mix(in srgb, var(--vscode-input-background) 80%, transparent);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--vscode-widget-shadow) 15%, transparent);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.settings-section:hover {
+  border-color: color-mix(in srgb, var(--vscode-foreground) 15%, transparent);
+  box-shadow: 0 6px 16px color-mix(in srgb, var(--vscode-widget-shadow) 20%, transparent);
 }
 
 .section-title {
@@ -348,13 +506,26 @@ async function fetchUsage() {
   align-items: center;
 }
 
+.setting-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.setting-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+}
+
 .input-wrapper {
-  flex: 1;
   display: flex;
   gap: 4px;
 }
 
-.api-key-input {
+.api-key-input,
+.setting-input {
   flex: 1;
   padding: 8px 12px;
   border: 1px solid var(--vscode-input-border, #3c3c3c);
@@ -364,9 +535,18 @@ async function fetchUsage() {
   font-size: 14px;
 }
 
-.api-key-input:focus {
+.api-key-input:focus,
+.setting-input:focus {
   outline: none;
   border-color: var(--vscode-focusBorder);
+}
+
+.save-section {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--vscode-input-border, #3c3c3c);
+  display: flex;
+  justify-content: flex-end;
 }
 
 .toggle-btn {
@@ -385,16 +565,30 @@ async function fetchUsage() {
 
 .save-btn {
   padding: 8px 16px;
-  border: none;
-  border-radius: 4px;
-  background: var(--vscode-button-background);
+  border: 1px solid transparent;
+  border-radius: 8px;
+  /* 毛玻璃渐变效果 */
+  background: linear-gradient(
+    135deg,
+    var(--vscode-button-background),
+    color-mix(in srgb, var(--vscode-button-background) 80%, #667eea)
+  );
   color: var(--vscode-button-foreground);
   cursor: pointer;
   font-size: 14px;
+  font-weight: 500;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--vscode-button-background) 30%, transparent);
 }
 
 .save-btn:hover:not(:disabled) {
-  background: var(--vscode-button-hoverBackground);
+  background: linear-gradient(
+    135deg,
+    var(--vscode-button-hoverBackground),
+    color-mix(in srgb, var(--vscode-button-hoverBackground) 80%, #667eea)
+  );
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px color-mix(in srgb, var(--vscode-button-background) 40%, transparent);
 }
 
 .save-btn:disabled {
@@ -435,8 +629,9 @@ async function fetchUsage() {
   color: var(--vscode-testing-iconFailed, #f44336);
 }
 
-.current-key-hint {
-  margin-top: 8px;
+.current-value-hint {
+  margin-top: 4px;
+  margin-bottom: 8px;
   font-size: 12px;
   color: var(--vscode-descriptionForeground);
 }
@@ -516,5 +711,39 @@ async function fetchUsage() {
 .date-input:focus {
   outline: none;
   border-color: var(--vscode-focusBorder);
+}
+
+.help-section {
+  background: color-mix(in srgb, var(--vscode-textBlockQuote-background) 50%, transparent);
+}
+
+.help-content {
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.help-content p {
+  margin: 8px 0;
+  font-weight: 600;
+}
+
+.help-content ul,
+.help-content ol {
+  margin: 8px 0;
+  padding-left: 20px;
+}
+
+.help-content li {
+  margin: 4px 0;
+  color: var(--vscode-editor-foreground);
+}
+
+.help-content a {
+  color: var(--vscode-textLink-foreground);
+  text-decoration: underline;
+}
+
+.help-content a:hover {
+  color: var(--vscode-textLink-activeForeground);
 }
 </style>

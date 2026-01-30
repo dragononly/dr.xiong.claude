@@ -9,7 +9,7 @@ import { computed } from 'vue';
 import type { TextBlock as TextBlockType } from '../../../models/ContentBlock';
 import type { ToolContext } from '../../../types/tool';
 import { marked } from 'marked';
-// import DOMPurify from 'dompurify'; // TODO: 安装后启用
+import DOMPurify from 'dompurify';
 
 interface Props {
   block: TextBlockType;
@@ -49,11 +49,26 @@ marked.setOptions({
   breaks: true,
 });
 
+// 配置 DOMPurify - 只允许安全的 HTML 标签
+const purifyConfig = {
+  ALLOWED_TAGS: [
+    'p', 'br', 'strong', 'b', 'em', 'i', 'u', 's', 'del', 'ins',
+    'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'ul', 'ol', 'li',
+    'blockquote', 'pre', 'code',
+    'a', 'img',
+    'table', 'thead', 'tbody', 'tr', 'th', 'td',
+    'hr', 'div', 'span', 'sup', 'sub'
+  ],
+  ALLOWED_ATTR: ['href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel'],
+  ALLOW_DATA_ATTR: false,
+};
+
 // 渲染 Markdown
 const renderedMarkdown = computed(() => {
   const rawHtml = marked.parse(props.block.text) as string;
-  // TODO: 使用 DOMPurify.sanitize(rawHtml) 进行安全清理
-  return rawHtml;
+  // 使用 DOMPurify 清理不安全的 HTML
+  return DOMPurify.sanitize(rawHtml, purifyConfig);
 });
 </script>
 

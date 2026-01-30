@@ -9,7 +9,7 @@
 
 <script setup lang="ts">
   import { ref, computed, onMounted, onBeforeUnmount, watch } from 'vue';
-  import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+  import type { PermissionMode } from '../../../../shared/permissions';
 
   interface Props {
     size?: number;
@@ -23,21 +23,19 @@
 
   const SPINNER_ICONS = ['·', '✢', '*', '✶', '✻', '✽'];
   const ANIMATION_ICONS = [...SPINNER_ICONS, ...[...SPINNER_ICONS].reverse()];
+  // 中文加载提示词
   const VERBS = [
-    'Accomplishing', 'Actioning', 'Actualizing', 'Baking', 'Booping', 'Brewing',
-    'Calculating', 'Cerebrating', 'Channelling', 'Churning', 'Clauding', 'Coalescing',
-    'Cogitating', 'Computing', 'Combobulating', 'Concocting', 'Considering', 'Contemplating',
-    'Cooking', 'Crafting', 'Creating', 'Crunching', 'Deciphering', 'Deliberating',
-    'Determining', 'Discombobulating', 'Doing', 'Effecting', 'Elucidating', 'Enchanting',
-    'Envisioning', 'Finagling', 'Flibbertigibbeting', 'Forging', 'Forming', 'Frolicking',
-    'Generating', 'Germinating', 'Hatching', 'Herding', 'Honking', 'Ideating',
-    'Imagining', 'Incubating', 'Inferring', 'Manifesting', 'Marinating', 'Meandering',
-    'Moseying', 'Mulling', 'Mustering', 'Musing', 'Noodling', 'Percolating',
-    'Perusing', 'Philosophising', 'Pontificating', 'Pondering', 'Processing', 'Puttering',
-    'Puzzling', 'Reticulating', 'Ruminating', 'Scheming', 'Schlepping', 'Shimmying',
-    'Simmering', 'Smooshing', 'Spelunking', 'Spinning', 'Stewing', 'Sussing',
-    'Synthesizing', 'Thinking', 'Tinkering', 'Transmuting', 'Unfurling', 'Unravelling',
-    'Vibing', 'Wandering', 'Whirring', 'Wibbling', 'Working', 'Wrangling'
+    '思考中', '分析中', '处理中', '计算中', '推理中', '生成中',
+    '理解中', '构思中', '酝酿中', '整理中', '编织中', '调和中',
+    '琢磨中', '组织中', '加工中', '推敲中', '考虑中', '沉思中',
+    '准备中', '创作中', '运算中', '解读中', '审视中', '权衡中',
+    '决策中', '执行中', '阐述中', '设想中', '规划中', '构建中',
+    '探索中', '萌发中', '孵化中', '发散中', '联想中', '呈现中',
+    '酝酿中', '漫步中', '梳理中', '集思中', '凝神中', '深思中',
+    '领悟中', '揣摩中', '苦思中', '筹划中', '酝酿中', '摇曳中',
+    '烹饪中', '融合中', '探险中', '旋转中', '熬制中', '探究中',
+    '综合中', '冥想中', '琢磨中', '变换中', '展开中', '拆解中',
+    '感应中', '游走中', '嗡鸣中', '摆动中', '工作中', '整合中'
   ];
   const MAX_VERB_LENGTH = Math.max(...VERBS.map(v => v.length));
 

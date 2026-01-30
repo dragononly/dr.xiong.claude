@@ -85,6 +85,10 @@ export interface ToolResultBlock {
   tool_use_id: string;
   content: any;
   is_error?: boolean;
+  /** 快照 ID（用于撤回操作） */
+  snapshotId?: string;
+  /** 是否可撤回 */
+  canRevert?: boolean;
 }
 
 export interface ToolUseBlock {

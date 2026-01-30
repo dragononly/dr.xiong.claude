@@ -70,14 +70,18 @@ export interface IAIProviderFactory {
  * 模型到 Provider 的映射
  */
 const MODEL_PROVIDER_MAP: Record<string, ProviderType> = {
-    // Claude 模型
+    // Claude 模型（新版命名）
     'claude-opus-4-5-20251101': 'claude',
-    'claude-sonnet-4-20250514': 'claude',
+    'claude-haiku-4-5-20251001': 'claude',
+    'claude-sonnet-4-5-20250929': 'claude',
+    // Claude 模型（旧版命名）
     'claude-3-5-sonnet-20241022': 'claude',
     'claude-3-5-haiku-20241022': 'claude',
     'claude-3-opus-20240229': 'claude',
     'claude-3-sonnet-20240229': 'claude',
     'claude-3-haiku-20240307': 'claude',
+    // Gemini 模型（通过 newapi 代理）
+    'gemini-3-pro-preview': 'claude',
     'default': 'claude',
 
 };

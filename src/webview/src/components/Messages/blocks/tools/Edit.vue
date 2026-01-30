@@ -13,6 +13,30 @@
         <span v-if="diffStats.added > 0" class="stat-add">+{{ diffStats.added }}</span>
         <span v-if="diffStats.removed > 0" class="stat-remove">-{{ diffStats.removed }}</span>
       </span>
+      <!-- 查看快照差异按钮 -->
+      <button
+        v-if="canViewSnapshotDiff"
+        class="view-snapshot-diff-btn"
+        :disabled="isViewingSnapshotDiff"
+        @click.stop="handleViewSnapshotDiff"
+        title="在 VSCode 中查看完整差异（原始 ↔ 修改后）"
+      >
+        <span v-if="isViewingSnapshotDiff" class="codicon codicon-loading codicon-modifier-spin"></span>
+        <span v-else class="codicon codicon-diff"></span>
+      </button>
+      <!-- 撤回按钮 -->
+      <button
+        v-if="canRevert"
+        class="revert-btn"
+        :disabled="isReverting"
+        @click.stop="handleRevert"
+        title="撤回此次编辑"
+      >
+        <span v-if="isReverting" class="codicon codicon-loading codicon-modifier-spin"></span>
+        <span v-else class="codicon codicon-discard"></span>
+      </button>
+      <span v-if="revertSuccess" class="revert-success">✅ 已撤回</span>
+      <span v-if="revertError" class="revert-error" :title="revertError">❌ 撤回失败</span>
     </template>
 
     <!-- 展开内容：显示 diff 视图 -->
@@ -71,6 +95,18 @@
             </div>
           </div>
         </div>
+
+        <!-- 内联确认按钮 (Cline 风格) -->
+        <div v-if="pendingPermission" class="inline-permission-actions">
+          <button class="btn-reject" @click="handleReject">
+            <span class="codicon codicon-close"></span>
+            <span>拒绝</span>
+          </button>
+          <button class="btn-accept" @click="handleAccept">
+            <span class="codicon codicon-check"></span>
+            <span>接受</span>
+          </button>
+        </div>
       </div>
 
       <!-- 错误内容 -->
@@ -88,6 +124,7 @@ import ToolError from './common/ToolError.vue';
 import ToolFilePath from './common/ToolFilePath.vue';
 import FileIcon from '@/components/FileIcon.vue';
 import { RuntimeKey } from '@/composables/runtimeContext';
+import { unescapeString } from '@/utils/formatUtils';
 
 interface Props {
   toolUse?: any;
@@ -99,6 +136,14 @@ interface Props {
 const props = defineProps<Props>();
 
 const runtime = inject(RuntimeKey);
+
+// 撤回状态
+const isReverting = ref(false);
+const revertSuccess = ref(false);
+const revertError = ref<string | null>(null);
+
+// 查看快照差异状态
+const isViewingSnapshotDiff = ref(false);
 
 const filePath = computed(() => {
   return props.toolUse?.input?.file_path || '';
@@ -167,6 +212,18 @@ const canOpenDiff = computed(() => {
   return filePath.value && !isPermissionRequest.value && !props.toolResult?.is_error;
 });
 
+// 查找匹配当前工具的待处理权限请求
+const pendingPermission = computed(() => {
+  if (!props.context?.permissionRequests || !filePath.value) return null;
+
+  // 查找 toolName 为 file_edit 且 file_path 匹配的权限请求
+  // 注意: 后端使用 file_edit，前端组件名是 Edit
+  return props.context.permissionRequests.find(req =>
+    (req.toolName === 'file_edit' || req.toolName === 'Edit') &&
+    req.inputs?.file_path === filePath.value
+  );
+});
+
 // 在 VSCode 中打开 diff 视图
 async function openInVSCodeDiff() {
   if (!runtime || !filePath.value) return;
@@ -206,8 +263,9 @@ function handleContentScroll() {
 
 // 从 old_string 和 new_string 生成简单的 patch
 function generatePatchFromInput(oldStr: string, newStr: string): any[] {
-  const oldLines = oldStr.split('\n');
-  const newLines = newStr.split('\n');
+  // 先处理转义字符，将 \n 等转换为实际换行符
+  const oldLines = unescapeString(oldStr).split('\n');
+  const newLines = unescapeString(newStr).split('\n');
 
   const lines: string[] = [];
 
@@ -306,6 +364,85 @@ function getLineNumber(patch: any, lineIndex: number): string {
     return String(newLine);
   }
 }
+
+// 处理接受操作
+function handleAccept() {
+  if (pendingPermission.value) {
+    // 传递空数组，不记住权限，下次还会询问
+    pendingPermission.value.accept(pendingPermission.value.inputs, []);
+  }
+}
+
+// 处理拒绝操作
+function handleReject() {
+  if (pendingPermission.value) {
+    pendingPermission.value.reject('User rejected the file edit operation', true);
+  }
+}
+
+// ============================================================================
+// 撤回功能
+// ============================================================================
+
+// 从 toolResult 获取快照 ID 和是否可撤回
+// 从 toolResult 获取快照 ID（不使用 toolUse.id fallback，因为那不是真正的快照 ID）
+const snapshotId = computed(() => {
+  return props.toolResult?.snapshotId || null;
+});
+
+const canRevert = computed(() => {
+  // 只有成功执行且未被撤回的修改才能撤回
+  if (revertSuccess.value) return false;  // 已撤回
+  if (!props.toolResult) return false;    // 未执行完成
+  if (props.toolResult.is_error) return false;  // 执行失败
+  // 只有后端明确标记 canRevert=true 才显示撤回按钮
+  return props.toolResult.canRevert === true;
+});
+
+// 是否可以查看快照差异（有快照就可以查看）
+const canViewSnapshotDiff = computed(() => {
+  if (!props.toolResult) return false;
+  if (props.toolResult.is_error) return false;
+  return props.toolResult.canRevert === true;
+});
+
+// 处理查看快照差异
+async function handleViewSnapshotDiff() {
+  if (!snapshotId.value || !runtime) return;
+
+  isViewingSnapshotDiff.value = true;
+  try {
+    const connection = await runtime.connectionManager.get();
+    await connection.viewSnapshotDiff(snapshotId.value);
+  } catch (error) {
+    console.error('[Edit.vue] viewSnapshotDiff 错误:', error);
+  } finally {
+    isViewingSnapshotDiff.value = false;
+  }
+}
+
+// 处理撤回操作
+async function handleRevert() {
+  if (!snapshotId.value || !runtime) return;
+
+  isReverting.value = true;
+  revertError.value = null;
+
+  try {
+    const connection = await runtime.connectionManager.get();
+    const result = await connection.revertFileChange(snapshotId.value);
+
+    if (result.success) {
+      revertSuccess.value = true;
+    } else {
+      revertError.value = result.error || '撤回失败';
+    }
+  } catch (error) {
+    revertError.value = String(error);
+  } finally {
+    isReverting.value = false;
+  }
+}
 </script>
 
 <style scoped>
@@ -328,6 +465,77 @@ function getLineNumber(patch: any, lineIndex: number): string {
   margin-left: 8px;
   font-size: 0.85em;
   font-weight: 500;
+}
+
+/* 查看快照差异按钮样式 */
+.view-snapshot-diff-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 8px;
+  padding: 2px 6px;
+  font-size: 0.75em;
+  border: none;
+  border-radius: 3px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  cursor: pointer;
+  transition: background-color 0.15s, opacity 0.15s;
+}
+
+.view-snapshot-diff-btn:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.view-snapshot-diff-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.view-snapshot-diff-btn .codicon {
+  font-size: 14px;
+}
+
+/* 撤回按钮样式 */
+.revert-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: 4px;
+  padding: 2px 6px;
+  font-size: 0.75em;
+  border: none;
+  border-radius: 3px;
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+  cursor: pointer;
+  transition: background-color 0.15s, opacity 0.15s;
+}
+
+.revert-btn:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.revert-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.revert-btn .codicon {
+  font-size: 12px;
+}
+
+.revert-success {
+  margin-left: 8px;
+  font-size: 0.75em;
+  color: var(--vscode-testing-iconPassed);
+}
+
+.revert-error {
+  margin-left: 8px;
+  font-size: 0.75em;
+  color: var(--vscode-testing-iconFailed);
+  cursor: help;
 }
 
 .stat-add {
@@ -546,5 +754,60 @@ function getLineNumber(patch: any, lineIndex: number): string {
 
 .diff-line-context .line-content {
   color: var(--vscode-editor-foreground);
+}
+
+/* 内联确认按钮样式 (Cline 风格) */
+.inline-permission-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: color-mix(in srgb, var(--vscode-editor-background) 95%, var(--vscode-focusBorder));
+  border-top: 1px solid var(--vscode-widget-border);
+}
+
+.btn-reject,
+.btn-accept {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 3px 8px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  border: none;
+  transition: background-color 0.15s, transform 0.1s;
+}
+
+.btn-reject {
+  background: var(--vscode-button-secondaryBackground);
+  color: var(--vscode-button-secondaryForeground);
+}
+
+.btn-reject:hover {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+
+.btn-reject:active {
+  transform: scale(0.98);
+}
+
+.btn-accept {
+  background: var(--vscode-button-background);
+  color: var(--vscode-button-foreground);
+}
+
+.btn-accept:hover {
+  background: var(--vscode-button-hoverBackground);
+}
+
+.btn-accept:active {
+  transform: scale(0.98);
+}
+
+.btn-reject .codicon,
+.btn-accept .codicon {
+  font-size: 11px;
 }
 </style>

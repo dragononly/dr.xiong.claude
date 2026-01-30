@@ -10,10 +10,16 @@ export interface PermissionEvent {
   permissionRequest: PermissionRequest;
 }
 
+// 存储已删除 session ID 的 localStorage key
+const DELETED_SESSIONS_STORAGE_KEY = 'claude-deleted-sessions';
+
 export class SessionStore {
   readonly sessions = signal<Session[]>([]);
   readonly activeSession = signal<Session | undefined>(undefined);
   readonly permissionRequested = new EventEmitter<PermissionEvent>();
+
+  // 已删除的 session IDs（持久化到 localStorage）
+  private deletedSessionIds = signal<Set<string>>(new Set());
 
   readonly sessionsByLastModified = computed(() =>
     [...this.sessions()].sort((a, b) => b.lastModifiedTime() - a.lastModifiedTime())
@@ -28,6 +34,9 @@ export class SessionStore {
     private readonly connectionManager: ConnectionManager,
     private readonly context: SessionContext
   ) {
+    // 从 localStorage 加载已删除的 session IDs
+    this.loadDeletedSessionIds();
+
     this.effectCleanups.push(
       effect(() => {
         if (this.connectionManager.connection()) {
@@ -145,11 +154,19 @@ export class SessionStore {
             .map((session) => [session.sessionId() as string, session])
         );
 
+        // 获取已删除的 session IDs
+        const deletedIds = this.deletedSessionIds();
+
         // 🚀 性能优化：批量收集新 sessions，最后一次性更新
         const newSessions: Session[] = [];
 
         for (const summary of response.sessions ?? []) {
           if (!summary.isCurrentWorkspace) {
+            continue;
+          }
+
+          // 跳过已删除的 session
+          if (deletedIds.has(summary.id)) {
             continue;
           }
 
@@ -195,7 +212,7 @@ export class SessionStore {
   }
 
   /**
-   * 关闭并移除一个会话
+   * 关闭并移除一个会话，持久化保存删除记录
    */
   closeSession(session: Session): void {
     const currentSessions = this.sessions();
@@ -206,6 +223,12 @@ export class SessionStore {
       const idx = currentSessions.indexOf(session);
       const nextSession = filtered[Math.min(idx, filtered.length - 1)];
       this.activeSession(nextSession);
+    }
+
+    // 持久化保存已删除的 session ID
+    const sessionId = session.sessionId();
+    if (sessionId) {
+      this.addDeletedSessionId(sessionId);
     }
 
     // 清理会话资源
@@ -251,6 +274,44 @@ export class SessionStore {
 
     if (!target.worktree() && source.worktree()) {
       target.worktree(source.worktree());
+    }
+  }
+
+  /**
+   * 从 localStorage 加载已删除的 session IDs
+   */
+  private loadDeletedSessionIds(): void {
+    try {
+      const stored = localStorage.getItem(DELETED_SESSIONS_STORAGE_KEY);
+      if (stored) {
+        const ids = JSON.parse(stored) as string[];
+        this.deletedSessionIds(new Set(ids));
+      }
+    } catch {
+      // 忽略解析错误
+    }
+  }
+
+  /**
+   * 添加已删除的 session ID 并保存到 localStorage
+   */
+  private addDeletedSessionId(sessionId: string): void {
+    const current = this.deletedSessionIds();
+    const updated = new Set(current);
+    updated.add(sessionId);
+    this.deletedSessionIds(updated);
+    this.saveDeletedSessionIds();
+  }
+
+  /**
+   * 保存已删除的 session IDs 到 localStorage
+   */
+  private saveDeletedSessionIds(): void {
+    try {
+      const ids = Array.from(this.deletedSessionIds());
+      localStorage.setItem(DELETED_SESSIONS_STORAGE_KEY, JSON.stringify(ids));
+    } catch {
+      // 忽略存储错误
     }
   }
 }

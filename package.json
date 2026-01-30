@@ -1,8 +1,8 @@
 {
   "name": "claude-dr-xiong",
   "displayName": "Dr-XIONG Claude",
-  "description": "Dr-XIONG Claude for VSCode. Bring the power of Claude AI assistant directly into your coding environment.",
-  "version": "0.5.4",
+  "description": "Dr-XIONG Claude for VSCode. Bring the power of Claude AI assistant directly into your coding environment. Now with GLM-powered image recognition!",
+  "version": "0.8.47",
   "publisher": "drxiong",
   "engines": {
     "vscode": "^1.98.0",
@@ -21,23 +21,60 @@
     "configuration": {
       "title": "Dr-XIONG Claude",
       "properties": {
-        "claudix.selectedModel": {
+        "xiong.apiKey": {
           "type": "string",
-          "default": "default",
-          "description": "The AI model for Claude Code"
+          "default": "",
+          "markdownDescription": "API Key。用于 Claude、XiongGPT、GLM 等所有 API 调用。**推荐在 settings.json 中配置**",
+          "scope": "application",
+          "order": 1
         },
-        "claudix.environmentVariables": {
+        "xiong.baseUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "API 代理地址。用于 Claude、XiongGPT、GLM。留空使用官方 Claude API",
+          "scope": "application",
+          "order": 2
+        },
+        "xiong.selectedModel": {
+          "type": "string",
+          "default": "claude-opus-4-5-20251101",
+          "markdownDescription": "选择使用的 AI 模型",
+          "scope": "application",
+          "order": 3
+        },
+        "xiong.claudeCliPath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Claude Code CLI 可执行文件路径（可选，手动指定更稳定）",
+          "scope": "application",
+          "order": 4
+        },
+        "xiong.glmModel": {
+          "type": "string",
+          "default": "glm-4.6v-flashx",
+          "markdownDescription": "GLM 图片识别模型",
+          "scope": "application",
+          "order": 10
+        },
+        "xiong.enableImagePreprocessing": {
+          "type": "boolean",
+          "default": true,
+          "markdownDescription": "启用图片预处理（使用 GLM 识别图片后再发送给 Claude）",
+          "scope": "application",
+          "order": 11
+        },
+        "xiong.environmentVariables": {
           "type": "array",
           "items": {
             "type": "object",
             "properties": {
               "name": {
                 "type": "string",
-                "description": "Environment variable name"
+                "description": "变量名"
               },
               "value": {
                 "type": "string",
-                "description": "Environment variable value"
+                "description": "变量值"
               }
             },
             "required": [
@@ -46,41 +83,47 @@
             ]
           },
           "default": [],
-          "description": "Environment variables to set when launching Claude"
+          "markdownDescription": "启动 Claude 时设置的环境变量",
+          "scope": "application",
+          "order": 20
         }
       }
     },
     "viewsContainers": {
       "activitybar": [
         {
-          "id": "claudix-chat-sidebar",
+          "id": "xiong-chat-sidebar",
           "title": "Dr-XIONG Claude",
           "icon": "resources/claude-logo.svg"
         }
       ]
     },
     "views": {
-      "claudix-chat-sidebar": [
+      "xiong-chat-sidebar": [
         {
           "icon": "resources/claude-logo.svg",
           "type": "webview",
-          "id": "claudix.chatView",
+          "id": "xiong.chatView",
           "name": "Dr-XIONG Claude"
         }
       ]
     },
     "commands": [
       {
-        "command": "claudix.showChat",
+        "command": "xiong.showChat",
         "title": "Show Dr-XIONG Claude"
       },
       {
-        "command": "claudix.openChatInEditor",
+        "command": "xiong.openChatInEditor",
         "title": "Dr-XIONG Claude: Open Chat in Editor"
       },
       {
-        "command": "claudix.openSettings",
+        "command": "xiong.openSettings",
         "title": "Dr-XIONG Claude: Open Settings"
+      },
+      {
+        "command": "xiong.diagnoseApiKeyStorage",
+        "title": "Dr-XIONG Claude: 诊断 API Key 存储"
       }
     ]
   },
@@ -126,7 +169,7 @@
     "vue-tsc": "^3.1.7"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.1.76",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.4",
     "@anthropic-ai/sdk": "^0.71.2",
     "@gn8/alien-signals-vue": "^0.1.1",
     "@mdi/font": "^7.4.47",
@@ -134,11 +177,13 @@
     "@vscode/codicons": "^0.0.43",
     "@vueuse/core": "^14.1.0",
     "alien-signals": "^3.1.1",
+    "dompurify": "^3.3.1",
     "fuse.js": "^7.1.0",
     "lexical": "^0.38.2",
     "lexical-vue": "^0.14.1",
     "marked": "^17.0.1",
     "motion-v": "^1.7.4",
+    "openai": "^6.16.0",
     "path-browserify-esm": "^1.0.6",
     "pinia": "^3.0.4",
     "vue": "^3.5.25",
@@ -153,7 +198,7 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/Haleclipse/Claudix"
+    "url": "https://github.com/Haleclipse/dr-xiong-claude"
   },
   "license": "AGPL-3.0"
 }

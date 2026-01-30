@@ -4,14 +4,15 @@
  * 双端通信协议：Extension ↔ WebView
  */
 
-// 导入 SDK 类型
+// 导入本地权限类型
 import type {
     SDKMessage,
     SDKUserMessage,
     PermissionResult,
     PermissionUpdate,
     PermissionMode
-} from '@anthropic-ai/claude-agent-sdk';
+} from './permissions';
+import type { LocalTodo, CreateTodoInput, UpdateTodoInput } from './todos';
 
 // ============================================================================
 // 基础消息类型
@@ -638,8 +639,28 @@ export type WebViewRequest =
     | GetClaudeConfigRequest
     | SetApiKeyRequest
     | SetBaseUrlRequest
+    | SetClaudeCliPathRequest
     | GetSubscriptionRequest
-    | GetUsageRequest;
+    | GetUsageRequest
+    | SetAutoApproveConfigRequest
+    | CheckEnvironmentRequest
+    // Local Todo CRUD
+    | GetLocalTodosRequest
+    | AddLocalTodoRequest
+    | UpdateLocalTodoRequest
+    | DeleteLocalTodoRequest
+    | ClearCompletedTodosRequest
+    | ImportClaudeTodosRequest
+    | ReadTaskFileRequest
+    // Auto Task
+    | EnableAutoTaskRequest
+    | DisableAutoTaskRequest
+    | GetAutoTaskConfigRequest
+    | SetAutoTaskIntervalRequest
+    | CheckTasksNowRequest
+    // 文件撤回
+    | RevertFileChangeRequest
+    | ViewSnapshotDiffRequest;
 
 /**
  * Extension → WebView 的所有响应类型
@@ -674,8 +695,28 @@ export type WebViewRequestResponse =
     | GetClaudeConfigResponse
     | SetApiKeyResponse
     | SetBaseUrlResponse
+    | SetClaudeCliPathResponse
     | GetSubscriptionResponse
-    | GetUsageResponse;
+    | GetUsageResponse
+    | SetAutoApproveConfigResponse
+    | CheckEnvironmentResponse
+    // Local Todo CRUD
+    | GetLocalTodosResponse
+    | AddLocalTodoResponse
+    | UpdateLocalTodoResponse
+    | DeleteLocalTodoResponse
+    | ClearCompletedTodosResponse
+    | ImportClaudeTodosResponse
+    | ReadTaskFileResponse
+    // Auto Task
+    | EnableAutoTaskResponse
+    | DisableAutoTaskResponse
+    | GetAutoTaskConfigResponse
+    | SetAutoTaskIntervalResponse
+    | CheckTasksNowResponse
+    // 文件撤回
+    | RevertFileChangeResponse
+    | ViewSnapshotDiffResponse;
 
 /**
  * Extension → WebView 的所有请求类型
@@ -686,8 +727,10 @@ export type ExtensionRequest =
     | SelectionChangedRequest
     | UpdateStateRequest
     | VisibilityChangedRequest
-    | WorkspaceChangedRequest;
-    // | AuthURLRequest;
+    | WorkspaceChangedRequest
+    | AutoTaskFoundNotification
+    | TaskFileChangedNotification;
+// | AuthURLRequest;
 
 /**
  * 可见性变化（Extension → WebView）
@@ -737,7 +780,10 @@ export interface GetClaudeConfigResponse {
     config: {
         apiKey: string | null;      // 脱敏显示
         baseUrl: string | null;
+        claudeCliPath?: string | null;
         isConfigured: boolean;
+        /** 存储模式：secretStorage（安全存储）或 globalState（备用存储） */
+        storageMode?: 'secretStorage' | 'globalState';
     };
 }
 
@@ -765,6 +811,20 @@ export interface SetBaseUrlRequest {
 
 export interface SetBaseUrlResponse {
     type: "set_base_url_response";
+    success: boolean;
+    error?: string;
+}
+
+/**
+ * 设置 Claude CLI 路径
+ */
+export interface SetClaudeCliPathRequest {
+    type: "set_claude_cli_path";
+    cliPath: string;
+}
+
+export interface SetClaudeCliPathResponse {
+    type: "set_claude_cli_path_response";
     success: boolean;
     error?: string;
 }
@@ -802,5 +862,287 @@ export interface GetUsageResponse {
         totalUsage: number;
         dailyUsage: Array<{ date: string; usage: number }>;
     } | null;
+    error?: string;
+}
+
+/**
+ * 自动审批配置
+ */
+export interface AutoApproveConfig {
+    autoApproveEnabled: boolean;  // 总开关：是否启用自动审批
+    confirmWrite: boolean;  // Write 工具是否需要确认
+    confirmEdit: boolean;   // Edit 工具是否需要确认
+}
+
+/**
+ * 设置自动审批配置
+ */
+export interface SetAutoApproveConfigRequest {
+    type: "set_auto_approve_config";
+    config: AutoApproveConfig;
+}
+
+export interface SetAutoApproveConfigResponse {
+    type: "set_auto_approve_config_response";
+    success: boolean;
+}
+
+/**
+ * 检查环境（Claude Code CLI 和 Git）
+ */
+export interface CheckEnvironmentRequest {
+    type: "check_environment";
+}
+
+export interface CheckEnvironmentResponse {
+    type: "check_environment_response";
+    claudeCode: {
+        installed: boolean;
+        version?: string;
+        path?: string;
+    };
+    git: {
+        installed: boolean;
+        version?: string;
+    };
+    allReady: boolean;  // 所有必需组件都已安装
+}
+
+// ============================================================================
+// 本地 Todo CRUD 请求
+// ============================================================================
+
+/**
+ * 获取所有本地 Todo
+ */
+export interface GetLocalTodosRequest {
+    type: "get_local_todos";
+}
+
+export interface GetLocalTodosResponse {
+    type: "get_local_todos_response";
+    todos: LocalTodo[];
+}
+
+/**
+ * 添加本地 Todo
+ */
+export interface AddLocalTodoRequest {
+    type: "add_local_todo";
+    todo: CreateTodoInput;
+}
+
+export interface AddLocalTodoResponse {
+    type: "add_local_todo_response";
+    todo: LocalTodo;
+}
+
+/**
+ * 更新本地 Todo
+ */
+export interface UpdateLocalTodoRequest {
+    type: "update_local_todo";
+    id: string;
+    updates: UpdateTodoInput;
+}
+
+export interface UpdateLocalTodoResponse {
+    type: "update_local_todo_response";
+    todo: LocalTodo;
+}
+
+/**
+ * 删除本地 Todo
+ */
+export interface DeleteLocalTodoRequest {
+    type: "delete_local_todo";
+    id: string;
+}
+
+export interface DeleteLocalTodoResponse {
+    type: "delete_local_todo_response";
+    success: boolean;
+}
+
+/**
+ * 清除已完成的 Todo
+ */
+export interface ClearCompletedTodosRequest {
+    type: "clear_completed_todos";
+}
+
+export interface ClearCompletedTodosResponse {
+    type: "clear_completed_todos_response";
+    deletedCount: number;
+}
+
+/**
+ * 从 Claude TodoWrite 导入
+ */
+export interface ImportClaudeTodosRequest {
+    type: "import_claude_todos";
+    todos: Array<{ content: string; status: string; activeForm?: string }>;
+    sessionId?: string;
+}
+
+export interface ImportClaudeTodosResponse {
+    type: "import_claude_todos_response";
+    todos: LocalTodo[];
+}
+
+// ============================================================================
+// 任务文件读取
+// ============================================================================
+
+/**
+ * 读取任务文件 (.tasks/current.md)
+ */
+export interface ReadTaskFileRequest {
+    type: "read_task_file";
+}
+
+export interface ReadTaskFileResponse {
+    type: "read_task_file_response";
+    success: boolean;
+    content?: string;
+    error?: string;
+}
+
+// ============================================================================
+// 自动任务执行
+// ============================================================================
+
+/**
+ * 自动任务配置
+ */
+export interface AutoTaskConfig {
+    enabled: boolean;
+    checkInterval: number;  // 毫秒
+}
+
+/**
+ * 启用自动任务
+ */
+export interface EnableAutoTaskRequest {
+    type: "enable_auto_task";
+    interval?: number;  // 可选的检查间隔
+}
+
+export interface EnableAutoTaskResponse {
+    type: "enable_auto_task_response";
+    success: boolean;
+    config: AutoTaskConfig;
+}
+
+/**
+ * 禁用自动任务
+ */
+export interface DisableAutoTaskRequest {
+    type: "disable_auto_task";
+}
+
+export interface DisableAutoTaskResponse {
+    type: "disable_auto_task_response";
+    success: boolean;
+}
+
+/**
+ * 获取自动任务配置
+ */
+export interface GetAutoTaskConfigRequest {
+    type: "get_auto_task_config";
+}
+
+export interface GetAutoTaskConfigResponse {
+    type: "get_auto_task_config_response";
+    config: AutoTaskConfig;
+}
+
+/**
+ * 设置自动任务检查间隔
+ */
+export interface SetAutoTaskIntervalRequest {
+    type: "set_auto_task_interval";
+    interval: number;
+}
+
+export interface SetAutoTaskIntervalResponse {
+    type: "set_auto_task_interval_response";
+    success: boolean;
+    config: AutoTaskConfig;
+}
+
+/**
+ * 手动触发任务检查
+ */
+export interface CheckTasksNowRequest {
+    type: "check_tasks_now";
+}
+
+export interface CheckTasksNowResponse {
+    type: "check_tasks_now_response";
+    tasks: Array<{
+        title: string;
+        status: 'pending' | 'in-progress' | 'completed';
+        section: 'in-progress' | 'pending' | 'completed';
+    }>;
+}
+
+/**
+ * 自动任务发现通知 (Extension → WebView)
+ */
+export interface AutoTaskFoundNotification {
+    type: "auto_task_found";
+    tasks: Array<{
+        title: string;
+        status: 'pending' | 'in-progress' | 'completed';
+        section: 'in-progress' | 'pending' | 'completed';
+    }>;
+    prompt: string;  // 生成的任务执行提示词
+}
+
+/**
+ * 任务文件变化通知 (Extension → WebView)
+ * 用于实时更新 UI
+ */
+export interface TaskFileChangedNotification {
+    type: "task_file_changed";
+    tasks: Array<{
+        title: string;
+        status: 'pending' | 'in-progress' | 'completed';
+        section: 'in-progress' | 'pending' | 'completed';
+    }>;
+}
+
+// ============================================================================
+// 文件修改撤回
+// ============================================================================
+
+/**
+ * 撤回文件修改请求
+ */
+export interface RevertFileChangeRequest {
+    type: "revert_file_change";
+    snapshotId: string;  // 快照 ID（通常是 toolUseId）
+}
+
+export interface RevertFileChangeResponse {
+    type: "revert_file_change_response";
+    success: boolean;
+    filePath?: string;
+    error?: string;
+}
+
+/**
+ * 查看快照差异请求（在 VSCode 中显示 diff）
+ */
+export interface ViewSnapshotDiffRequest {
+    type: "view_snapshot_diff";
+    snapshotId: string;  // 快照 ID
+}
+
+export interface ViewSnapshotDiffResponse {
+    type: "view_snapshot_diff_response";
+    success: boolean;
     error?: string;
 }

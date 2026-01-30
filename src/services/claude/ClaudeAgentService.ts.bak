@@ -1,0 +1,1888 @@
+/**
+ * ClaudeAgentService - Claude Agent 核心编排服务
+ *
+ * 职责：
+ * 1. 管理多个 Claude 会话（channels）
+ * 2. 接收和分发来自 Transport 的消息
+ * 3. 启动和控制 Claude 会话（launchClaude, interruptClaude）
+ * 4. 路由请求到对应的 handlers
+ * 5. RPC 请求-响应管理
+ *
+ * 依赖：
+ * - IClaudeSdkService: SDK 调用
+ * - IClaudeSessionService: 会话历史
+ * - ILogService: 日志
+ * - 其他基础服务
+ */
+
+import * as vscode from 'vscode';
+import { createDecorator } from '../../di/instantiation';
+import { ILogService } from '../logService';
+import { IConfigurationService } from '../configurationService';
+import { IWorkspaceService } from '../workspaceService';
+import { IFileSystemService } from '../fileSystemService';
+import { INotificationService } from '../notificationService';
+import { ITerminalService } from '../terminalService';
+import { ISSHService } from '../sshService';
+import { ITabsAndEditorsService } from '../tabsAndEditorsService';
+import { IClaudeSessionService } from './ClaudeSessionService';
+import { AsyncStream, ITransport } from './transport';
+import { HandlerContext } from './handlers/types';
+import { IWebViewService } from '../webViewService';
+import { IClaudeConfigService } from '../claudeConfigService';
+import { LocalTodoService } from '../LocalTodoService';
+import { AutoTaskService, Task } from '../AutoTaskService';
+import { FileSnapshotService } from '../FileSnapshotService';
+import { WorkspaceInitService } from '../WorkspaceInitService';
+
+// 新 AI 服务（自建工具层）
+import { IAgentCoordinator, AgentCoordinator, SessionState, AgentStreamEvent, AgentConfig } from '../agent/AgentCoordinator';
+import { IClaudeApiClient } from '../ai/ClaudeApiClient';
+import { IToolRegistry } from '../../tools';
+
+// 消息类型导入
+import type {
+    WebViewToExtensionMessage,
+    ExtensionToWebViewMessage,
+    RequestMessage,
+    ResponseMessage,
+    ExtensionRequest,
+    ToolPermissionRequest,
+    ToolPermissionResponse,
+} from '../../shared/messages';
+
+// SDK 类型定义（本地定义，不再依赖 SDK）
+type SDKMessage = any;
+type SDKUserMessage = { type: 'user'; message: string };
+type PermissionResult = { behavior: 'allow' | 'deny'; updatedInput?: unknown; updatedPermissions?: unknown[] };
+type PermissionMode = string;
+
+// Handlers 导入
+import {
+    handleInit,
+    handleGetClaudeState,
+    handleGetMcpServers,
+    handleGetAssetUris,
+    handleOpenFile,
+    handleGetCurrentSelection,
+    handleShowNotification,
+    handleNewConversationTab,
+    handleRenameTab,
+    handleOpenDiff,
+    handleListSessions,
+    handleGetSession,
+    handleExec,
+    handleListFiles,
+    handleStatPath,
+    handleOpenContent,
+    handleOpenURL,
+    handleOpenConfigFile,
+    handleWriteFile,
+    handleGetClaudeConfig,
+    handleSetApiKey,
+    handleSetBaseUrl,
+    handleGetSubscription,
+    handleGetUsage,
+    // Local Todo handlers
+    handleGetLocalTodos,
+    handleAddLocalTodo,
+    handleUpdateLocalTodo,
+    handleDeleteLocalTodo,
+    handleClearCompletedTodos,
+    handleImportClaudeTodos,
+    // handleOpenClaudeInTerminal,
+    // handleGetAuthStatus,
+    // handleLogin,
+    // handleSubmitOAuthCode,
+} from './handlers/handlers';
+
+// SSH Handlers 导入
+import {
+    handleSSHConnect,
+    handleSSHCommand,
+    handleSSHDisconnect,
+    handleSSHGetOutput,
+    handleSSHListSessions,
+} from './handlers/sshHandlers';
+
+/**
+ * 模型名称映射表
+ *
+ * 将 UI 中的简短模型 ID 映射为 Anthropic API 兼容的完整模型 ID
+ */
+const MODEL_NAME_MAPPING: Record<string, string> = {
+    // UI 模型 ID -> Anthropic API 完整模型 ID
+    'claude-opus-4-5': 'claude-opus-4-5-20251101',
+    'claude-sonnet-4-5': 'claude-sonnet-4-5-20250929',
+    'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
+};
+
+export const IClaudeAgentService = createDecorator<IClaudeAgentService>('claudeAgentService');
+
+// ============================================================================
+// 类型定义
+// ============================================================================
+
+/**
+ * Channel 对象：管理单个 Claude 会话
+ * 
+ * 注意：现在使用 AgentCoordinator，不再依赖 SDK 的 Query 对象
+ */
+export interface Channel {
+    in: AsyncStream<SDKUserMessage>;  // 输入流：向 SDK 发送用户消息（兼容旧代码）
+    session?: SessionState;           // 新会话状态（AgentCoordinator）
+    abortController?: AbortController; // 用于中断
+}
+
+/**
+ * 请求处理器
+ */
+interface RequestHandler {
+    resolve: (value: any) => void;
+    reject: (error: Error) => void;
+}
+
+/**
+ * Claude Agent 服务接口
+ */
+export interface IClaudeAgentService {
+    readonly _serviceBrand: undefined;
+
+    /**
+     * 设置 Transport
+     */
+    setTransport(transport: ITransport): void;
+
+    /**
+     * 启动消息循环
+     */
+    start(): void;
+
+    /**
+     * 接收来自客户端的消息
+     */
+    fromClient(message: WebViewToExtensionMessage): Promise<void>;
+
+    /**
+     * 启动 Claude 会话
+     */
+    launchClaude(
+        channelId: string,
+        resume: string | null,
+        cwd: string,
+        model: string | null,
+        permissionMode: string,
+        thinkingLevel: string | null
+    ): Promise<void>;
+
+    /**
+     * 中断 Claude 会话
+     */
+    interruptClaude(channelId: string): Promise<void>;
+
+    /**
+     * 关闭会话
+     */
+    closeChannel(channelId: string, sendNotification: boolean, error?: string): void;
+
+    /**
+     * 关闭所有会话
+     */
+    closeAllChannels(): Promise<void>;
+
+    /**
+     * 凭证变更时关闭所有通道
+     */
+    closeAllChannelsWithCredentialChange(): Promise<void>;
+
+    /**
+     * 处理请求
+     */
+    processRequest(request: RequestMessage, signal: AbortSignal): Promise<unknown>;
+
+    /**
+     * 设置权限模式
+     */
+    setPermissionMode(channelId: string, mode: PermissionMode): Promise<void>;
+
+    /**
+     * 设置 Thinking Level
+     */
+    setThinkingLevel(channelId: string, level: string): Promise<void>;
+
+    /**
+     * 设置模型
+     */
+    setModel(channelId: string, model: string): Promise<void>;
+
+    /**
+     * 通知工作区变化
+     */
+    notifyWorkspaceChanged(): void;
+
+    /**
+     * 关闭
+     */
+    shutdown(): Promise<void>;
+}
+
+// ============================================================================
+// ClaudeAgentService 实现
+// ============================================================================
+
+/**
+ * Claude Agent 服务实现
+ */
+export class ClaudeAgentService implements IClaudeAgentService {
+    readonly _serviceBrand: undefined;
+
+    // Transport 适配器
+    private transport?: ITransport;
+
+    // 会话管理
+    private channels = new Map<string, Channel>();
+
+    // 接收来自客户端的消息流
+    private fromClientStream = new AsyncStream<WebViewToExtensionMessage>();
+
+    // 等待响应的请求
+    private outstandingRequests = new Map<string, RequestHandler>();
+
+    // 取消控制器
+    private abortControllers = new Map<string, AbortController>();
+
+    // Handler 上下文（缓存）
+    private handlerContext: HandlerContext;
+
+    // Thinking Level 配置
+    private thinkingLevel: string = 'off';
+
+    // 每个 channel 的权限模式（用于 YOLO 模式判断）
+    private channelPermissionModes = new Map<string, string>();
+
+    // 每个 channel 的 session ID（用于错误恢复）
+    private channelSessionIds = new Map<string, string>();
+
+    // 每个 channel 的启动参数（用于错误恢复时重新启动）
+    private channelLaunchParams = new Map<string, {
+        cwd: string;
+        model: string | null;
+        permissionMode: string;
+        thinkingLevel: string | null;
+    }>();
+
+    // InputValidationError 重试计数（防止无限重试）
+    private channelRetryCount = new Map<string, number>();
+    private readonly MAX_RETRY_COUNT = 2;
+
+    // 自动审批配置
+    private autoApproveConfig = {
+        autoApproveEnabled: true,  // 总开关：默认启用
+        confirmWrite: true,   // Write 工具默认需要确认
+        confirmEdit: true     // Edit 工具默认需要确认
+    };
+
+    // 自动任务服务
+    private autoTaskService: AutoTaskService;
+
+    constructor(
+        // 静态参数必须放在最前面（由 SyncDescriptor 传入）
+        private readonly localTodoService: LocalTodoService,
+        // 服务注入参数
+        @ILogService private readonly logService: ILogService,
+        @IConfigurationService private readonly configService: IConfigurationService,
+        @IWorkspaceService private readonly workspaceService: IWorkspaceService,
+        @IFileSystemService private readonly fileSystemService: IFileSystemService,
+        @INotificationService private readonly notificationService: INotificationService,
+        @ITerminalService private readonly terminalService: ITerminalService,
+        @ISSHService private readonly sshService: ISSHService,
+        @ITabsAndEditorsService private readonly tabsAndEditorsService: ITabsAndEditorsService,
+        @IClaudeSessionService private readonly sessionService: IClaudeSessionService,
+        @IWebViewService private readonly webViewService: IWebViewService,
+        @IClaudeConfigService private readonly claudeConfigService: IClaudeConfigService,
+        // 新 AI 服务
+        @IAgentCoordinator private readonly agentCoordinator: IAgentCoordinator,
+        @IClaudeApiClient private readonly claudeApiClient: IClaudeApiClient,
+        @IToolRegistry private readonly toolRegistry: IToolRegistry
+    ) {
+        // 构建 Handler 上下文
+        this.handlerContext = {
+            logService: this.logService,
+            configService: this.configService,
+            workspaceService: this.workspaceService,
+            fileSystemService: this.fileSystemService,
+            notificationService: this.notificationService,
+            terminalService: this.terminalService,
+            sshService: this.sshService,
+            tabsAndEditorsService: this.tabsAndEditorsService,
+            sessionService: this.sessionService,
+            agentService: this,  // 自身引用
+            webViewService: this.webViewService,
+            claudeConfigService: this.claudeConfigService,
+            localTodoService: this.localTodoService,
+            claudeApiClient: this.claudeApiClient,
+        };
+
+        // 初始化自动任务服务
+        this.autoTaskService = new AutoTaskService(this.logService, this);
+
+        // 设置任务发现回调（用于自动执行）
+        this.autoTaskService.onTaskFound((tasks) => {
+            this.handleAutoTaskFound(tasks);
+        });
+
+        // 设置文件变化回调（用于实时 UI 更新）
+        this.autoTaskService.onTaskFileChanged((tasks) => {
+            this.handleTaskFileChanged(tasks);
+        });
+    }
+
+    /**
+     * 设置 Transport
+     */
+    setTransport(transport: ITransport): void {
+        this.transport = transport;
+
+        // 监听来自客户端的消息，推入队列
+        transport.onMessage(async (message) => {
+            await this.fromClient(message);
+        });
+
+        this.logService.info('[ClaudeAgentService] Transport 已连接');
+    }
+
+    /**
+     * 启动消息循环
+     */
+    start(): void {
+        // 启动消息循环
+        this.readFromClient();
+
+        this.logService.info('[ClaudeAgentService] 消息循环已启动');
+    }
+
+    /**
+     * 接收来自客户端的消息
+     */
+    async fromClient(message: WebViewToExtensionMessage): Promise<void> {
+        this.fromClientStream.enqueue(message);
+    }
+
+    /**
+     * 从客户端读取并分发消息
+     */
+    private async readFromClient(): Promise<void> {
+        try {
+            for await (const message of this.fromClientStream) {
+                try {
+                    switch (message.type) {
+                        case "launch_claude":
+                            await this.launchClaude(
+                                message.channelId,
+                                message.resume || null,
+                                message.cwd || this.getCwd(),
+                                message.model || null,
+                                message.permissionMode || "acceptEdits",
+                                message.thinkingLevel || null
+                            );
+                            break;
+
+                        case "close_channel":
+                            this.closeChannel(message.channelId, false);
+                            break;
+
+                        case "interrupt_claude":
+                            await this.interruptClaude(message.channelId);
+                            break;
+
+                        case "io_message":
+                            this.transportMessage(
+                                message.channelId,
+                                message.message,
+                                message.done
+                            );
+                            break;
+
+                        case "request":
+                            this.handleRequest(message);
+                            break;
+
+                        case "response":
+                            this.handleResponse(message);
+                            break;
+
+                        case "cancel_request":
+                            this.handleCancellation(message.targetRequestId);
+                            break;
+
+                        default:
+                            this.logService.error(`Unknown message type: ${(message as { type: string }).type}`);
+                    }
+                } catch (messageError) {
+                    // 单个消息处理失败不应该中断整个消息循环
+                    this.logService.error(`[ClaudeAgentService] 处理消息时出错 (${message.type}): ${messageError}`);
+                }
+            }
+        } catch (error) {
+            this.logService.error(`[ClaudeAgentService] Error in readFromClient: ${error}`);
+        }
+    }
+
+    /**
+     * 启动 Claude 会话
+     */
+    async launchClaude(
+        channelId: string,
+        resume: string | null,
+        cwd: string,
+        model: string | null,
+        permissionMode: string,
+        thinkingLevel: string | null
+    ): Promise<void> {
+        // 保存 thinkingLevel
+        if (thinkingLevel) {
+            this.thinkingLevel = thinkingLevel;
+        }
+
+        // 使用新架构（自建工具层）
+        await this.launchClaudeNewArch(channelId, cwd, model, permissionMode);
+    }
+
+    /**
+     * 使用新架构启动 Claude 会话（自建工具层）
+     */
+    private async launchClaudeNewArch(
+        channelId: string,
+        cwd: string,
+        model: string | null,
+        permissionMode: string
+    ): Promise<void> {
+        this.logService.info('');
+        this.logService.info('╔════════════════════════════════════════╗');
+        this.logService.info('║  启动 Claude 会话（新架构）              ║');
+        this.logService.info('╚════════════════════════════════════════╝');
+        this.logService.info(`  Channel ID: ${channelId}`);
+        this.logService.info(`  CWD: ${cwd}`);
+        this.logService.info(`  Model: ${model || 'default'}`);
+        this.logService.info(`  Permission: ${permissionMode}`);
+        this.logService.info('');
+
+        // 🔄 新会话开始时清理任务文件（只保留待办任务）
+        try {
+            const workspaceInitService = new WorkspaceInitService({
+                info: (msg: string) => this.logService.info(msg),
+                error: (msg: string, err?: unknown) => this.logService.error(msg, err)
+            });
+            await workspaceInitService.cleanupTasksFile(cwd);
+        } catch (cleanupError) {
+            // 清理失败不影响会话启动
+            this.logService.error('[ClaudeAgentService] 任务清理失败', cleanupError);
+        }
+
+        // 检查是否已存在
+        if (this.channels.has(channelId)) {
+            this.logService.error(`❌ Channel 已存在: ${channelId}`);
+            throw new Error(`Channel already exists: ${channelId}`);
+        }
+
+        try {
+            // 1. 配置 ClaudeApiClient（如果尚未配置）
+            if (!this.claudeApiClient.isConfigured()) {
+                // 从 ClaudeConfigService 获取 API Key、Base URL 和 Model
+                const apiKey = await this.claudeConfigService.getApiKey();
+                const baseUrl = await this.claudeConfigService.getBaseUrl();
+                const configuredModel = await this.claudeConfigService.getModel();
+
+                this.logService.info(`[ClaudeAgentService] 配置信息: baseUrl=${baseUrl}, hasApiKey=${!!apiKey}, configuredModel=${configuredModel}`);
+
+                if (!apiKey) {
+                    // 显示用户友好的提示（不阻塞消息循环）
+                    const errorMessage = '❌ API Key 未配置\n\n请按以下步骤配置：\n1. 点击下方 "配置 API Key" 按钮\n2. 或在设置中搜索 "xiong.apiKey" 进行配置\n3. 配置完成后重新启动聊天';
+
+                    this.notificationService.showError(errorMessage);
+
+                    // 异步显示对话框，不阻塞消息循环
+                    vscode.window.showErrorMessage(
+                        'API Key 未配置，无法使用聊天功能',
+                        '配置 API Key',
+                        '取消'
+                    ).then(action => {
+                        if (action === '配置 API Key') {
+                            vscode.commands.executeCommand('xiong.openSettings');
+                        }
+                    });
+
+                    throw new Error('API Key 未配置，请在设置中配置 API Key');
+                }
+                // 使用配置的模型，如果未配置则使用传入的模型或默认值
+                const defaultModel = configuredModel || model || 'claude-sonnet-4-5-20250929';
+                this.logService.info(`[ClaudeAgentService] 最终使用模型: ${defaultModel}`);
+                this.claudeApiClient.configure({
+                    baseUrl: baseUrl || 'https://api.anthropic.com',
+                    apiKey: apiKey,
+                    defaultModel: defaultModel,
+                });
+                this.logService.info(`  ✓ ClaudeApiClient 已配置，模型: ${defaultModel}`);
+            } else {
+                this.logService.info(`[ClaudeAgentService] ClaudeApiClient 已配置，跳过重新配置`);
+            }
+
+            // 2. 创建 AgentCoordinator 会话
+            // 注意：需要将 UI 传来的简短模型名映射为完整的 API 模型名
+            let resolvedModel: string | undefined;
+            if (model) {
+                // 先尝试从映射表获取完整模型名
+                resolvedModel = MODEL_NAME_MAPPING[model] || model;
+            } else {
+                // 如果没有传入模型，从配置中获取
+                resolvedModel = await this.claudeConfigService.getModel() || undefined;
+            }
+            this.logService.info(`[ClaudeAgentService] AgentConfig 使用模型: ${resolvedModel || '(使用 API 默认)'}`);
+
+            const agentConfig: AgentConfig = {
+                model: resolvedModel,
+                cwd,
+                impersonateClaude: true, // 始终启用 Claude 伪装，防止模型暴露真实身份
+                maxToolLoops: 1000, // 增加到 1000 次，支持更复杂的任务
+            };
+
+            const session = this.agentCoordinator.createSession(agentConfig);
+            this.logService.info(`  ✓ 会话已创建: ${session.id}`);
+
+            // 3. 创建输入流和 AbortController
+            const inputStream = new AsyncStream<SDKUserMessage>();
+            const abortController = new AbortController();
+
+            // 4. 存储 channel
+            this.channels.set(channelId, {
+                in: inputStream,
+                session,
+                abortController,
+            });
+            this.channelPermissionModes.set(channelId, permissionMode);
+            this.logService.info(`  ✓ Channel 已注册，当前 ${this.channels.size} 个活跃会话`);
+
+            // 5. 发送初始化消息给 WebView
+            this.transport!.send({
+                type: "io_message",
+                channelId,
+                message: {
+                    type: "assistant",
+                    subtype: "init",
+                    session_id: session.id,
+                    cwd: cwd,
+                } as any,
+                done: false
+            });
+
+            // 6. 启动消息监听循环
+            this.startNewArchMessageLoop(channelId, inputStream, session, abortController.signal);
+
+            this.logService.info('');
+            this.logService.info('✓ Claude 会话启动成功（新架构）');
+            this.logService.info('════════════════════════════════════════');
+            this.logService.info('');
+
+        } catch (error) {
+            this.logService.error(`❌ 会话启动失败: ${error}`);
+
+            // 发送友好的错误消息到前端
+            if (this.transport) {
+                const errorMessages: Record<string, string> = {
+                    'API Key 未配置，请在设置中配置 API Key': '⚠️ API Key 未配置\n\n请在设置页面配置 API Key 后重试。\n\n步骤：\n1. 点击右上角设置图标 ⚙️\n2. 填写 "API Key" 字段\n3. 点击 "保存配置"'
+                };
+
+                const friendlyMessage = errorMessages[String(error)] ||
+                    `⚠️ 启动失败：${error}\n\n如果问题持续存在，请检查：\n• API Key 是否正确配置\n• 网络连接是否正常\n• Base URL 是否可访问`;
+
+                this.transport.send({
+                    type: "io_message",
+                    channelId,
+                    message: {
+                        type: 'system',
+                        message: {
+                            type: 'error',
+                            content: friendlyMessage
+                        }
+                    } as any,
+                    done: true
+                });
+            }
+
+            this.closeChannel(channelId, true, String(error));
+            throw error;
+        }
+    }
+
+    /**
+     * 新架构消息循环
+     * 
+     * 流式输出策略：
+     * - 累积文本内容，只在完成时发送完整消息
+     * - 工具调用时，发送包含 tool_use 的 assistant 消息
+     * - 工具结果作为单独的 user 消息发送
+     */
+    private async startNewArchMessageLoop(
+        channelId: string,
+        inputStream: AsyncStream<SDKUserMessage>,
+        session: SessionState,
+        signal: AbortSignal
+    ): Promise<void> {
+        (async () => {
+            try {
+                for await (const userMessage of inputStream) {
+                    if (signal.aborted) {
+                        break;
+                    }
+
+                    // 只处理用户文本消息
+                    if (userMessage.type !== 'user') {
+                        continue;
+                    }
+
+                    // SDK 消息格式：{ type, message: { role, content } }
+                    const messageContent = (userMessage as any).message?.content ?? userMessage.content;
+
+                    // 保留完整的内容块（包括图片），不要转换为纯字符串
+                    const content = typeof messageContent === 'string'
+                        ? messageContent
+                        : messageContent;  // ✅ 直接使用内容块数组，包含图片
+
+                    this.logService.info(`[NewArch] 收到用户消息: ${content.slice(0, 100)}...`);
+
+                    // 使用 AgentCoordinator 处理消息
+                    try {
+                        // 累积内容
+                        let accumulatedText = '';
+                        let currentToolId = '';
+                        let eventCount = 0;
+
+                        this.logService.info(`[NewArch] 开始处理流式消息...`);
+
+                        // 创建工具确认回调
+                        const toolConfirmCallback = async (toolName: string, toolId: string, input: any): Promise<boolean> => {
+                            if (this.shouldConfirmTool(toolName)) {
+                                this.logService.info(`[NewArch] 工具 ${toolName} (id=${toolId}) 需要用户确认`);
+
+                                // 使用 WebView 内联权限请求（轻量级 UI）
+                                try {
+                                    const result = await this.requestToolPermission(
+                                        channelId,
+                                        toolName,
+                                        input,
+                                        [] // 不提供权限更新建议
+                                    );
+
+                                    const confirmed = result.behavior === 'allow';
+                                    this.logService.info(`[NewArch] 用户选择: ${confirmed ? '允许' : '拒绝'}`);
+                                    return confirmed;
+                                } catch (error) {
+                                    this.logService.error(`[NewArch] 权限请求失败: ${error}`);
+                                    return false;
+                                }
+                            }
+                            return true;
+                        };
+
+                        for await (const event of this.agentCoordinator.streamMessage(session, content, { signal, toolConfirmCallback })) {
+                            eventCount++;
+                            this.logService.debug(`[NewArch] 收到事件 #${eventCount}: ${event.type}`);
+
+                            if (signal.aborted) {
+                                this.logService.info(`[NewArch] 收到中止信号，停止处理`);
+                                break;
+                            }
+
+                            switch (event.type) {
+                                case 'text':
+                                    // 只累积文本，不立即发送
+                                    accumulatedText += event.text;
+                                    break;
+
+                                case 'tool_start':
+                                    this.logService.info(`[NewArch] 工具开始: ${event.name} (id=${event.id})`);
+                                    // 使用 AgentCoordinator 传递的工具 ID
+                                    currentToolId = event.id;
+
+                                    // 发送包含之前文本和 tool_use 的 assistant 消息
+                                    {
+                                        const contentBlocks: any[] = [];
+                                        if (accumulatedText) {
+                                            contentBlocks.push({ type: 'text', text: accumulatedText });
+                                            accumulatedText = ''; // 清空已发送的文本
+                                        }
+                                        contentBlocks.push({
+                                            type: 'tool_use',
+                                            id: currentToolId,
+                                            name: event.name,
+                                            input: event.input,
+                                        });
+
+                                        this.transport!.send({
+                                            type: "io_message",
+                                            channelId,
+                                            message: {
+                                                type: 'assistant',
+                                                message: {
+                                                    role: 'assistant',
+                                                    content: contentBlocks,
+                                                },
+                                                session_id: session.id,
+                                            } as any,
+                                            done: false
+                                        });
+                                    }
+                                    break;
+
+                                case 'tool_end':
+                                    this.logService.info(`[NewArch] 工具结束: ${event.name} (id=${event.id}, isError=${event.isError}, snapshotId=${event.snapshotId}, canRevert=${event.canRevert})`);
+                                    // 使用事件中的 ID（与 tool_start 一致）
+                                    this.transport!.send({
+                                        type: "io_message",
+                                        channelId,
+                                        message: {
+                                            type: 'user',
+                                            message: {
+                                                role: 'user',
+                                                content: [{
+                                                    type: 'tool_result',
+                                                    tool_use_id: event.id,
+                                                    content: event.output,
+                                                    is_error: event.isError,
+                                                    // 传递撤回相关字段到前端
+                                                    snapshotId: event.snapshotId,
+                                                    canRevert: event.canRevert,
+                                                }],
+                                            },
+                                            session_id: session.id,
+                                        } as any,
+                                        done: false
+                                    });
+                                    break;
+
+                                case 'thinking':
+                                    // thinking 暂时忽略或单独处理
+                                    break;
+
+                                case 'done':
+                                    this.logService.info(`[NewArch] 流处理完成，累计事件: ${eventCount}`);
+                                    this.logService.info(`[NewArch] 最终累积文本长度: ${accumulatedText.length} 字符`);
+
+                                    // 完成：发送最终的文本消息（如果有）
+                                    if (accumulatedText) {
+                                        this.transport!.send({
+                                            type: "io_message",
+                                            channelId,
+                                            message: {
+                                                type: 'assistant',
+                                                message: {
+                                                    role: 'assistant',
+                                                    content: [{ type: 'text', text: accumulatedText }],
+                                                },
+                                                session_id: session.id,
+                                            } as any,
+                                            done: false
+                                        });
+                                        this.logService.info(`[NewArch] 已发送最终文本消息`);
+                                    }
+
+                                    // 发送 result 消息
+                                    this.transport!.send({
+                                        type: "io_message",
+                                        channelId,
+                                        message: {
+                                            type: 'result',
+                                            subtype: 'success',
+                                            session_id: session.id,
+                                            cost_usd: 0,
+                                            usage: event.usage || { inputTokens: 0, outputTokens: 0 },
+                                        } as any,
+                                        done: false
+                                    });
+                                    this.logService.info(`[NewArch] 已发送 result 消息，任务完成`);
+                                    break;
+
+                                case 'error':
+                                    this.logService.error(`[NewArch] AgentCoordinator 返回错误: ${event.error}`);
+
+                                    // 发送错误消息到 UI
+                                    this.transport!.send({
+                                        type: "io_message",
+                                        channelId,
+                                        message: {
+                                            type: 'result',
+                                            subtype: 'error',
+                                            session_id: session.id,
+                                            error: event.error,
+                                        } as any,
+                                        done: false
+                                    });
+
+                                    // 同时发送通知让用户知道出错了，但强调可以继续使用
+                                    this.notificationService.showWarning(`⚠️ 请求遇到问题: ${event.error}\n\n您可以继续发送消息。`);
+                                    this.logService.error(`[NewArch] 已发送错误通知到 UI`);
+                                    break;
+                            }
+
+                            // 如果是完成或错误事件，跳出内层循环
+                            if (event.type === 'done' || event.type === 'error') {
+                                this.logService.info(`[NewArch] 收到终止事件: ${event.type}，跳出流处理循环`);
+                                break;
+                            }
+                        }
+
+                        this.logService.info(`[NewArch] 消息处理完成，等待下一条用户消息`);
+                    } catch (streamError) {
+                        this.logService.error(`[NewArch] 流式处理错误: ${streamError}`);
+
+                        // 发送错误消息到 UI
+                        this.transport!.send({
+                            type: "io_message",
+                            channelId,
+                            message: {
+                                type: "error",
+                                error: String(streamError),
+                                session_id: session.id,
+                            } as any,
+                            done: false
+                        });
+
+                        // 发送 result 错误消息
+                        this.transport!.send({
+                            type: "io_message",
+                            channelId,
+                            message: {
+                                type: 'result',
+                                subtype: 'error',
+                                session_id: session.id,
+                                error: String(streamError),
+                            } as any,
+                            done: false
+                        });
+
+                        // 通知用户，但强调可以继续使用
+                        this.notificationService.showWarning(`⚠️ 请求遇到问题: ${streamError}\n\n您可以继续发送消息。`);
+                        this.logService.info(`[NewArch] 已发送 result 错误消息，用户可以继续发送新消息`);
+                    }
+                }
+
+                // 正常结束
+                this.logService.info(`[NewArch] 消息循环结束`);
+                this.closeChannel(channelId, true);
+
+            } catch (error) {
+                this.logService.error(`[NewArch] 消息循环错误: ${error}`);
+                this.closeChannel(channelId, true, String(error));
+            }
+        })();
+    }
+
+    /**
+     * 将 AgentStreamEvent 转换为 SDK 消息格式（兼容 WebView）
+     * 
+     * WebView 的 Message.fromRaw 期望格式：
+     * - raw.type: 'user' | 'assistant'
+     * - raw.message.content: ContentBlock[] (数组)
+     */
+    private convertAgentEventToSdkMessage(event: AgentStreamEvent, sessionId: string): SDKMessage | null {
+        switch (event.type) {
+            case 'text':
+                return {
+                    type: 'assistant',
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'text', text: event.text }],
+                    },
+                    session_id: sessionId,
+                } as any;
+
+            case 'tool_start':
+                return {
+                    type: 'assistant',
+                    message: {
+                        role: 'assistant',
+                        content: [{
+                            type: 'tool_use',
+                            id: `tool_${Date.now()}`,
+                            name: event.name,
+                            input: event.input,
+                        }],
+                    },
+                    session_id: sessionId,
+                } as any;
+
+            case 'tool_end':
+                return {
+                    type: 'user',
+                    message: {
+                        role: 'user',
+                        content: [{
+                            type: 'tool_result',
+                            tool_use_id: `tool_${Date.now()}`,
+                            content: event.output,
+                            is_error: event.isError,
+                        }],
+                    },
+                    session_id: sessionId,
+                } as any;
+
+            case 'thinking':
+                return {
+                    type: 'assistant',
+                    message: {
+                        role: 'assistant',
+                        content: [{ type: 'thinking', thinking: event.text }],
+                    },
+                    session_id: sessionId,
+                } as any;
+
+            case 'done':
+                return {
+                    type: 'result',
+                    subtype: 'success',
+                    session_id: sessionId,
+                    cost_usd: 0,
+                    usage: event.usage || { inputTokens: 0, outputTokens: 0 },
+                } as any;
+
+            case 'error':
+                return {
+                    type: 'result',
+                    subtype: 'error',
+                    session_id: sessionId,
+                    error: event.error,
+                } as any;
+
+            default:
+                return null;
+        }
+    }
+
+    /**
+     * 中断 Claude 会话
+     */
+    async interruptClaude(channelId: string): Promise<void> {
+        const channel = this.channels.get(channelId);
+        if (!channel) {
+            this.logService.warn(`[ClaudeAgentService] Channel 不存在: ${channelId}`);
+            return;
+        }
+
+        try {
+            // 使用 AbortController 中断
+            if (channel.abortController) {
+                channel.abortController.abort();
+                this.logService.info(`[ClaudeAgentService] 已中断 Channel: ${channelId}`);
+
+                // 发送中断消息给前端
+                if (this.transport) {
+                    // 1. 发送 interrupt 类型的消息（显示中断文本）
+                    this.transport.send({
+                        type: "io_message",
+                        channelId,
+                        message: {
+                            type: 'interrupt',
+                            message: {
+                                reason: 'user_interrupt',
+                                text: '[Request interrupted by user]',
+                            },
+                        } as any,
+                        done: false
+                    });
+
+                    // 2. 发送 result 类型的消息，让前端解除 busy 状态
+                    this.transport.send({
+                        type: "io_message",
+                        channelId,
+                        message: {
+                            type: 'result',
+                            interrupted: true,
+                        } as any,
+                        done: true  // 标记为完成
+                    });
+
+                    // 3. 发送 close_channel 关闭 stream，确保前端 readMessages 循环正确退出
+                    // 这样下次发送消息时可以正常创建新的 channel
+                    this.transport.send({
+                        type: "close_channel",
+                        channelId,
+                    });
+                }
+            }
+
+            // 4. 清理 channel 资源
+            this.channels.delete(channelId);
+            this.channelPermissionModes.delete(channelId);
+            this.channelSessionIds.delete(channelId);
+            this.channelLaunchParams.delete(channelId);
+            this.channelRetryCount.delete(channelId);
+            this.logService.info(`[ClaudeAgentService] Channel ${channelId} 资源已清理`);
+        } catch (error) {
+            this.logService.error(`[ClaudeAgentService] 中断失败:`, error);
+        }
+    }
+
+    /**
+     * 关闭会话
+     */
+    closeChannel(channelId: string, sendNotification: boolean, error?: string): void {
+        this.logService.info(`[ClaudeAgentService] 关闭 Channel: ${channelId}`);
+
+        // 1. 发送关闭通知
+        if (sendNotification && this.transport) {
+            this.transport.send({
+                type: "close_channel",
+                channelId,
+                error
+            });
+        }
+
+        // 2. 清理 channel
+        const channel = this.channels.get(channelId);
+        if (channel) {
+            channel.in.done();
+
+            // 使用 AbortController 中断
+            if (channel.abortController) {
+                channel.abortController.abort();
+            }
+
+            this.channels.delete(channelId);
+        }
+
+        // 3. 清理权限模式记录
+        this.channelPermissionModes.delete(channelId);
+
+        // 4. 清理错误恢复相关记录
+        this.channelSessionIds.delete(channelId);
+        this.channelLaunchParams.delete(channelId);
+        this.channelRetryCount.delete(channelId);
+
+        this.logService.info(`  ✓ Channel 已关闭，剩余 ${this.channels.size} 个活跃会话`);
+    }
+
+
+    /**
+     * 关闭所有会话
+     */
+    async closeAllChannels(): Promise<void> {
+        const promises = Array.from(this.channels.keys()).map(channelId =>
+            this.closeChannel(channelId, false)
+        );
+        await Promise.all(promises);
+        this.channels.clear();
+    }
+
+    /**
+     * 凭证变更时关闭所有通道
+     */
+    async closeAllChannelsWithCredentialChange(): Promise<void> {
+        const promises = Array.from(this.channels.keys()).map(channelId =>
+            this.closeChannel(channelId, true)
+        );
+        await Promise.all(promises);
+        this.channels.clear();
+    }
+
+    /**
+     * 传输消息到 Channel
+     */
+    private transportMessage(
+        channelId: string,
+        message: SDKMessage | SDKUserMessage,
+        done: boolean
+    ): void {
+        const channel = this.channels.get(channelId);
+        if (!channel) {
+            throw new Error(`Channel not found: ${channelId}`);
+        }
+
+        // 用户消息加入输入流
+        if (message.type === "user") {
+            channel.in.enqueue(message as SDKUserMessage);
+        }
+
+        // 如果标记为结束，关闭输入流
+        if (done) {
+            channel.in.done();
+        }
+    }
+
+    /**
+     * 处理来自客户端的请求
+     */
+    private async handleRequest(message: RequestMessage): Promise<void> {
+        const abortController = new AbortController();
+        this.abortControllers.set(message.requestId, abortController);
+
+        try {
+            const response = await this.processRequest(message, abortController.signal);
+            this.transport!.send({
+                type: "response",
+                requestId: message.requestId,
+                response
+            });
+        } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            this.transport!.send({
+                type: "response",
+                requestId: message.requestId,
+                response: {
+                    type: "error",
+                    error: errorMsg
+                }
+            });
+        } finally {
+            this.abortControllers.delete(message.requestId);
+        }
+    }
+
+    /**
+     * 处理请求
+     */
+    async processRequest(message: RequestMessage, signal: AbortSignal): Promise<unknown> {
+        const request = message.request;
+        const channelId = message.channelId;
+
+        if (!request || typeof request !== 'object' || !('type' in request)) {
+            throw new Error('Invalid request format');
+        }
+
+        this.logService.info(`[ClaudeAgentService] 处理请求: ${request.type}`);
+
+        // 路由表：将请求类型映射到 handler
+        switch (request.type) {
+            // 初始化和状态
+            case "init":
+                return handleInit(request, this.handlerContext);
+
+            case "get_claude_state":
+                return handleGetClaudeState(request, this.handlerContext);
+
+            case "get_mcp_servers":
+                return handleGetMcpServers(request, this.handlerContext, channelId);
+
+            case "get_asset_uris":
+                return handleGetAssetUris(request, this.handlerContext);
+
+            // 编辑器操作
+            case "open_file":
+                return handleOpenFile(request, this.handlerContext);
+
+            case "get_current_selection":
+                return handleGetCurrentSelection(this.handlerContext);
+
+            case "open_diff":
+                return handleOpenDiff(request, this.handlerContext, signal);
+
+            case "open_content":
+                return handleOpenContent(request, this.handlerContext, signal);
+
+            // UI 操作
+            case "show_notification":
+                return handleShowNotification(request, this.handlerContext);
+
+            case "new_conversation_tab":
+                return handleNewConversationTab(request, this.handlerContext);
+
+            case "rename_tab":
+                return handleRenameTab(request, this.handlerContext);
+
+            case "open_url":
+                return handleOpenURL(request, this.handlerContext);
+
+            // 设置
+            case "set_permission_mode": {
+                if (!channelId) {
+                    throw new Error('channelId is required for set_permission_mode');
+                }
+                const permReq = request as any;
+                await this.setPermissionMode(channelId, permReq.mode);
+                return {
+                    type: "set_permission_mode_response",
+                    success: true
+                };
+            }
+
+            case "set_model": {
+                if (!channelId) {
+                    throw new Error('channelId is required for set_model');
+                }
+                const modelReq = request as any;
+                const targetModel = modelReq.model?.value ?? "";
+                if (!targetModel) {
+                    throw new Error("Invalid model selection");
+                }
+                await this.setModel(channelId, targetModel);
+                return {
+                    type: "set_model_response",
+                    success: true
+                };
+            }
+
+            case "set_thinking_level": {
+                if (!channelId) {
+                    throw new Error('channelId is required for set_thinking_level');
+                }
+                const thinkReq = request as any;
+                await this.setThinkingLevel(channelId, thinkReq.thinkingLevel);
+                return {
+                    type: "set_thinking_level_response"
+                };
+            }
+
+            case "open_config_file":
+                return handleOpenConfigFile(request, this.handlerContext);
+
+            // 会话管理
+            case "list_sessions_request":
+                return handleListSessions(request, this.handlerContext);
+
+            case "get_session_request":
+                return handleGetSession(request, this.handlerContext);
+
+            // 文件操作
+            case "list_files_request":
+                return handleListFiles(request, this.handlerContext);
+
+            case "stat_path_request":
+                return handleStatPath(request as any, this.handlerContext);
+
+            case "write_file":
+                return handleWriteFile(request as any, this.handlerContext);
+
+            // 进程操作
+            case "exec":
+                return handleExec(request, this.handlerContext);
+
+            // SSH 操作
+            case "ssh_connect":
+                return handleSSHConnect(request as any, this.handlerContext);
+
+            case "ssh_command":
+                return handleSSHCommand(request as any, this.handlerContext);
+
+            case "ssh_disconnect":
+                return handleSSHDisconnect(request as any, this.handlerContext);
+
+            case "ssh_get_output":
+                return handleSSHGetOutput(request as any, this.handlerContext);
+
+            case "ssh_list_sessions":
+                return handleSSHListSessions(request as any, this.handlerContext);
+
+            // Claude 配置管理
+            case "get_claude_config":
+                return handleGetClaudeConfig(request as any, this.handlerContext);
+
+            case "set_api_key":
+                return handleSetApiKey(request as any, this.handlerContext);
+
+            case "set_base_url":
+                return handleSetBaseUrl(request as any, this.handlerContext);
+
+            case "get_subscription":
+                return handleGetSubscription(request as any, this.handlerContext);
+
+            case "get_usage":
+                return handleGetUsage(request as any, this.handlerContext);
+
+            case "set_auto_approve_config": {
+                const configReq = request as any;
+                this.setAutoApproveConfig(configReq.config);
+                return {
+                    type: "set_auto_approve_config_response",
+                    success: true
+                };
+            }
+
+            // 本地 Todo CRUD
+            case "get_local_todos":
+                return handleGetLocalTodos(request as any, this.handlerContext);
+
+            case "add_local_todo":
+                return handleAddLocalTodo(request as any, this.handlerContext);
+
+            case "update_local_todo":
+                return handleUpdateLocalTodo(request as any, this.handlerContext);
+
+            case "delete_local_todo":
+                return handleDeleteLocalTodo(request as any, this.handlerContext);
+
+            case "clear_completed_todos":
+                return handleClearCompletedTodos(request as any, this.handlerContext);
+
+            case "import_claude_todos":
+                return handleImportClaudeTodos(request as any, this.handlerContext);
+
+            case "read_task_file":
+                return this.handleReadTaskFile();
+
+            // 自动任务
+            case "enable_auto_task":
+                return this.handleEnableAutoTask(request as any);
+
+            case "disable_auto_task":
+                return this.handleDisableAutoTask();
+
+            case "get_auto_task_config":
+                return this.handleGetAutoTaskConfig();
+
+            case "set_auto_task_interval":
+                return this.handleSetAutoTaskInterval(request as any);
+
+            case "check_tasks_now":
+                return this.handleCheckTasksNow();
+
+            // 文件撤回
+            case "revert_file_change":
+                return this.handleRevertFileChange(request as any);
+
+            // 查看快照差异
+            case "view_snapshot_diff":
+                return this.handleViewSnapshotDiff(request as any);
+
+            // case "open_claude_in_terminal":
+            //     return handleOpenClaudeInTerminal(request, this.handlerContext);
+
+            // 认证
+            // case "get_auth_status":
+            //     return handleGetAuthStatus(request, this.handlerContext);
+
+            // case "login":
+            //     return handleLogin(request, this.handlerContext);
+
+            // case "submit_oauth_code":
+            //     return handleSubmitOAuthCode(request, this.handlerContext);
+
+            default:
+                throw new Error(`Unknown request type: ${request.type}`);
+        }
+    }
+
+    /**
+     * 读取任务文件 (.tasks/current.md)
+     */
+    private async handleReadTaskFile(): Promise<any> {
+        try {
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (!workspaceFolder) {
+                return {
+                    type: "read_task_file_response",
+                    success: false,
+                    error: "没有打开的工作区"
+                };
+            }
+
+            const taskFilePath = vscode.Uri.joinPath(workspaceFolder.uri, '.tasks', 'current.md');
+
+            try {
+                const content = await vscode.workspace.fs.readFile(taskFilePath);
+                return {
+                    type: "read_task_file_response",
+                    success: true,
+                    content: Buffer.from(content).toString('utf-8')
+                };
+            } catch {
+                // 文件不存在
+                return {
+                    type: "read_task_file_response",
+                    success: false,
+                    error: "任务文件不存在"
+                };
+            }
+        } catch (error) {
+            return {
+                type: "read_task_file_response",
+                success: false,
+                error: String(error)
+            };
+        }
+    }
+
+    /**
+     * 启用自动任务
+     */
+    private handleEnableAutoTask(request: { interval?: number }): any {
+        this.autoTaskService.enable(request.interval);
+        return {
+            type: "enable_auto_task_response",
+            success: true,
+            config: this.autoTaskService.getConfig()
+        };
+    }
+
+    /**
+     * 禁用自动任务
+     */
+    private handleDisableAutoTask(): any {
+        this.autoTaskService.disable();
+
+        // 发送通知到前端，清除待执行任务
+        if (this.transport) {
+            this.transport.send({
+                type: "request",
+                channelId: "auto-task",
+                requestId: this.generateId(),
+                request: {
+                    type: "auto_task_disabled",
+                }
+            });
+            this.logService.info('[ClaudeAgentService] 已发送自动任务禁用通知');
+        }
+
+        return {
+            type: "disable_auto_task_response",
+            success: true
+        };
+    }
+
+    /**
+     * 获取自动任务配置
+     */
+    private handleGetAutoTaskConfig(): any {
+        return {
+            type: "get_auto_task_config_response",
+            config: this.autoTaskService.getConfig()
+        };
+    }
+
+    /**
+     * 设置自动任务检查间隔
+     */
+    private handleSetAutoTaskInterval(request: { interval: number }): any {
+        this.autoTaskService.setCheckInterval(request.interval);
+        return {
+            type: "set_auto_task_interval_response",
+            success: true,
+            config: this.autoTaskService.getConfig()
+        };
+    }
+
+    /**
+     * 手动触发任务检查
+     */
+    private async handleCheckTasksNow(): Promise<any> {
+        const tasks = await this.autoTaskService.checkNow();
+        return {
+            type: "check_tasks_now_response",
+            tasks
+        };
+    }
+
+    /**
+     * 处理文件修改撤回请求
+     */
+    private async handleRevertFileChange(request: { snapshotId: string }): Promise<any> {
+        try {
+            const snapshotService = FileSnapshotService.getInstance(this.logService);
+            const snapshot = snapshotService.getSnapshot(request.snapshotId);
+
+            if (!snapshot) {
+                return {
+                    type: "revert_file_change_response",
+                    success: false,
+                    error: "快照不存在或已过期"
+                };
+            }
+
+            if (!snapshotService.canRevert(request.snapshotId)) {
+                return {
+                    type: "revert_file_change_response",
+                    success: false,
+                    error: "此修改已被撤回"
+                };
+            }
+
+            const success = await snapshotService.revert(request.snapshotId);
+
+            if (success) {
+                this.logService.info(`[ClaudeAgentService] 文件撤回成功: ${snapshot.filePath}`);
+                return {
+                    type: "revert_file_change_response",
+                    success: true,
+                    filePath: snapshot.filePath
+                };
+            } else {
+                return {
+                    type: "revert_file_change_response",
+                    success: false,
+                    error: "撤回操作失败"
+                };
+            }
+        } catch (error) {
+            this.logService.error(`[ClaudeAgentService] 文件撤回失败:`, error);
+            return {
+                type: "revert_file_change_response",
+                success: false,
+                error: String(error)
+            };
+        }
+    }
+
+    /**
+     * 处理查看快照差异请求
+     * 在 VSCode 中打开 diff 视图显示修改前后的差异
+     */
+    private async handleViewSnapshotDiff(request: { snapshotId: string }): Promise<any> {
+        try {
+            const snapshotService = FileSnapshotService.getInstance(this.logService);
+            const snapshot = snapshotService.getSnapshot(request.snapshotId);
+
+            if (!snapshot) {
+                return {
+                    type: "view_snapshot_diff_response",
+                    success: false,
+                    error: "快照不存在或已过期"
+                };
+            }
+
+            const fileUri = vscode.Uri.file(snapshot.filePath);
+
+            // 读取当前文件内容
+            let currentContent: string;
+            try {
+                const currentContentBuffer = await vscode.workspace.fs.readFile(fileUri);
+                currentContent = Buffer.from(currentContentBuffer).toString('utf-8');
+            } catch {
+                // 如果文件不存在（可能已被删除），显示为空
+                currentContent = '';
+            }
+
+            // 创建临时文件来显示原始内容
+            const path = await import('path');
+            const fileName = path.basename(snapshot.filePath);
+            const tempDir = await this.fileSystemService.createTempDir();
+            const originalFilePath = path.join(tempDir, `original_${fileName}`);
+            const currentFilePath = path.join(tempDir, `current_${fileName}`);
+
+            // 写入原始内容和当前内容到临时文件
+            await vscode.workspace.fs.writeFile(
+                vscode.Uri.file(originalFilePath),
+                Buffer.from(snapshot.originalContent, 'utf-8')
+            );
+            await vscode.workspace.fs.writeFile(
+                vscode.Uri.file(currentFilePath),
+                Buffer.from(currentContent, 'utf-8')
+            );
+
+            // 打开 diff 视图
+            const diffTitle = `${fileName} (原始 ↔ 当前修改)`;
+            await vscode.commands.executeCommand(
+                'vscode.diff',
+                vscode.Uri.file(originalFilePath),
+                vscode.Uri.file(currentFilePath),
+                diffTitle,
+                { preview: true }
+            );
+
+            this.logService.info(`[ClaudeAgentService] 打开快照差异视图: ${snapshot.filePath}`);
+            return {
+                type: "view_snapshot_diff_response",
+                success: true
+            };
+        } catch (error) {
+            this.logService.error(`[ClaudeAgentService] 打开快照差异失败:`, error);
+            return {
+                type: "view_snapshot_diff_response",
+                success: false,
+                error: String(error)
+            };
+        }
+    }
+
+    /**
+     * 处理自动任务发现
+     */
+    private handleAutoTaskFound(tasks: Task[]): void {
+        if (!this.transport) {
+            this.logService.warn('[ClaudeAgentService] Transport 未连接，无法发送自动任务通知');
+            return;
+        }
+
+        const prompt = this.autoTaskService.generateTaskPrompt(tasks);
+
+        // 发送通知到 WebView
+        this.transport.send({
+            type: "request",
+            channelId: "auto-task",
+            requestId: this.generateId(),
+            request: {
+                type: "auto_task_found",
+                tasks,
+                prompt
+            }
+        });
+
+        this.logService.info(`[ClaudeAgentService] 发送自动任务通知，${tasks.length} 个任务`);
+    }
+
+    /**
+     * 处理任务文件变化（用于实时 UI 更新）
+     */
+    private handleTaskFileChanged(tasks: Task[]): void {
+        if (!this.transport) {
+            return;
+        }
+
+        // 发送文件变化通知到 WebView
+        this.transport.send({
+            type: "request",
+            channelId: "task-file",
+            requestId: this.generateId(),
+            request: {
+                type: "task_file_changed",
+                tasks
+            }
+        });
+
+        this.logService.info(`[ClaudeAgentService] 发送任务文件变化通知，${tasks.length} 个任务`);
+    }
+
+    /**
+     * 处理响应
+     */
+    private handleResponse(message: ResponseMessage): void {
+        const handler = this.outstandingRequests.get(message.requestId);
+        if (handler) {
+            const response = message.response;
+            if (typeof response === 'object' && response !== null && 'type' in response && response.type === "error") {
+                handler.reject(new Error((response as { error: string }).error));
+            } else {
+                handler.resolve(response);
+            }
+            this.outstandingRequests.delete(message.requestId);
+        } else {
+            this.logService.warn(`[ClaudeAgentService] 没有找到请求处理器: ${message.requestId}`);
+        }
+    }
+
+    /**
+     * 处理取消
+     */
+    private handleCancellation(requestId: string): void {
+        const abortController = this.abortControllers.get(requestId);
+        if (abortController) {
+            abortController.abort();
+            this.abortControllers.delete(requestId);
+        }
+    }
+
+    /**
+     * 发送请求到客户端
+     */
+    protected sendRequest<TRequest extends ExtensionRequest, TResponse>(
+        channelId: string,
+        request: TRequest
+    ): Promise<TResponse> {
+        const requestId = this.generateId();
+
+        return new Promise<TResponse>((resolve, reject) => {
+            // 注册 Promise handlers
+            this.outstandingRequests.set(requestId, { resolve, reject });
+
+            // 发送请求
+            this.transport!.send({
+                type: "request",
+                channelId,
+                requestId,
+                request
+            } as RequestMessage);
+        }).finally(() => {
+            // 清理
+            this.outstandingRequests.delete(requestId);
+        });
+    }
+
+    /**
+     * 请求工具权限
+     */
+    protected async requestToolPermission(
+        channelId: string,
+        toolName: string,
+        inputs: Record<string, unknown>,
+        suggestions: PermissionUpdate[]
+    ): Promise<PermissionResult> {
+        const request: ToolPermissionRequest = {
+            type: "tool_permission_request",
+            toolName,
+            inputs,
+            suggestions
+        };
+
+        const response = await this.sendRequest<ToolPermissionRequest, ToolPermissionResponse>(
+            channelId,
+            request
+        );
+
+        return response.result;
+    }
+
+    /**
+     * 关闭服务
+     */
+    async shutdown(): Promise<void> {
+        await this.closeAllChannels();
+        this.fromClientStream.done();
+    }
+
+    /**
+     * 通知工作区变化
+     */
+    notifyWorkspaceChanged(): void {
+        if (!this.transport) {
+            return;
+        }
+
+        const defaultCwd = this.workspaceService.getDefaultCwd();
+        const workspaceFolders = this.workspaceService.getWorkspaceFolderInfos();
+
+        this.logService.info(`[ClaudeAgentService] 工作区变化: ${defaultCwd}`);
+
+        // 发送工作区变化通知到 WebView
+        this.transport.send({
+            type: "request",
+            requestId: this.generateId(),
+            request: {
+                type: "workspace_changed",
+                defaultCwd,
+                workspaceFolders
+            }
+        });
+    }
+
+    // ========================================================================
+    // 工具方法
+    // ========================================================================
+
+    /**
+     * 生成唯一 ID
+     */
+    private generateId(): string {
+        return Math.random().toString(36).substring(2, 15);
+    }
+
+    /**
+     * 获取当前工作目录
+     */
+    private getCwd(): string {
+        return this.workspaceService.getDefaultWorkspaceFolder()?.uri.fsPath || process.cwd();
+    }
+
+    /**
+     * 获取 maxThinkingTokens（根据 thinking level）
+     */
+    private getMaxThinkingTokens(level: string): number {
+        return level === 'off' ? 0 : 31999;
+    }
+
+    /**
+     * 设置 thinking level
+     */
+    async setThinkingLevel(channelId: string, level: string): Promise<void> {
+        this.thinkingLevel = level;
+
+        // 更新正在运行的 channel
+        const channel = this.channels.get(channelId);
+        if (channel?.query) {
+            const maxTokens = this.getMaxThinkingTokens(level);
+            await channel.query.setMaxThinkingTokens(maxTokens);
+            this.logService.info(`[setThinkingLevel] Updated channel ${channelId} to ${level} (${maxTokens} tokens)`);
+        }
+    }
+
+    /**
+     * 设置权限模式
+     */
+    async setPermissionMode(channelId: string, mode: PermissionMode): Promise<void> {
+        const channel = this.channels.get(channelId);
+        if (!channel) {
+            this.logService.warn(`[setPermissionMode] Channel ${channelId} not found`);
+            throw new Error(`Channel ${channelId} not found`);
+        }
+
+        // 更新本地权限模式记录（用于 YOLO 模式判断）
+        this.channelPermissionModes.set(channelId, mode);
+
+        // 重要：始终向 SDK 传递 'default' 模式
+        // 这样 SDK 会持续调用 canUseTool 回调，我们在回调中根据本地记录的模式进行判断
+        // 如果传递 'acceptEdits'，SDK 会内部自动允许编辑操作，不调用 canUseTool
+        // 我们需要 canUseTool 被调用，以便实现自定义的确认逻辑（如 Write/Edit 确认）
+        await channel.query.setPermissionMode('default');
+        this.logService.info(`[setPermissionMode] Set channel ${channelId} to mode: ${mode} (SDK always uses 'default' for canUseTool callback)`);
+    }
+
+    /**
+     * 设置模型
+     */
+    async setModel(channelId: string, model: string): Promise<void> {
+        this.logService.info(`[setModel] 收到模型切换请求: channelId=${channelId}, model=${model}`);
+
+        const channel = this.channels.get(channelId);
+        if (!channel) {
+            this.logService.warn(`[setModel] Channel ${channelId} not found`);
+            throw new Error(`Channel ${channelId} not found`);
+        }
+
+        // 模型名称映射：将 UI 模型 ID 转换为 API 兼容格式
+        const mappedModel = MODEL_NAME_MAPPING[model] || model;
+        if (MODEL_NAME_MAPPING[model]) {
+            this.logService.info(`[setModel] 模型名称映射: ${model} -> ${mappedModel}`);
+        }
+
+        // 设置模型到 channel
+        this.logService.info(`[setModel] 调用 channel.query.setModel(${mappedModel})`);
+        await channel.query.setModel(mappedModel);
+
+        // 保存到配置（保存原始模型 ID，以便 UI 显示）
+        await this.configService.updateValue('xiong.selectedModel', model);
+
+        this.logService.info(`[setModel] 模型切换完成: channel=${channelId}, model=${model}`);
+    }
+
+    /**
+     * 设置自动审批配置
+     */
+    setAutoApproveConfig(config: { autoApproveEnabled?: boolean; confirmWrite?: boolean; confirmEdit?: boolean }): void {
+        if (typeof config.autoApproveEnabled === 'boolean') {
+            this.autoApproveConfig.autoApproveEnabled = config.autoApproveEnabled;
+        }
+        if (typeof config.confirmWrite === 'boolean') {
+            this.autoApproveConfig.confirmWrite = config.confirmWrite;
+        }
+        if (typeof config.confirmEdit === 'boolean') {
+            this.autoApproveConfig.confirmEdit = config.confirmEdit;
+        }
+        this.logService.info(`[setAutoApproveConfig] 更新配置: autoApproveEnabled=${this.autoApproveConfig.autoApproveEnabled}, confirmWrite=${this.autoApproveConfig.confirmWrite}, confirmEdit=${this.autoApproveConfig.confirmEdit}`);
+    }
+
+    /**
+     * 判断工具是否需要用户确认
+     *
+     * @param toolName 工具名称
+     * @returns 是否需要确认
+     */
+    private shouldConfirmTool(toolName: string): boolean {
+        // 如果总开关关闭，所有工具都需要确认
+        if (!this.autoApproveConfig.autoApproveEnabled) {
+            this.logService.info(`[shouldConfirmTool] 总开关关闭，${toolName} 需要确认`);
+            return true;
+        }
+
+        // file_write 工具 (写入文件)
+        if (toolName === 'file_write' && this.autoApproveConfig.confirmWrite) {
+            this.logService.info(`[shouldConfirmTool] file_write 需要确认 (confirmWrite=true)`);
+            return true;
+        }
+
+        // file_edit 工具 (编辑文件)
+        if (toolName === 'file_edit' && this.autoApproveConfig.confirmEdit) {
+            this.logService.info(`[shouldConfirmTool] file_edit 需要确认 (confirmEdit=true)`);
+            return true;
+        }
+
+        this.logService.debug(`[shouldConfirmTool] ${toolName} 不需要确认`);
+        // 其他工具默认不需要确认
+        return false;
+    }
+}

@@ -27,9 +27,9 @@
     <!-- 第一行：输入框区域 -->
     <div
       ref="textareaRef"
-      contenteditable="true"
-      class="aislash-editor-input custom-scroll-container"
-      :data-placeholder="placeholder"
+      :contenteditable="!disabled"
+      :class="['aislash-editor-input', 'custom-scroll-container', { 'input-disabled': disabled }]"
+      :data-placeholder="disabled && disabledMessage ? disabledMessage : placeholder"
       style="min-height: 34px; max-height: 240px; resize: none; overflow-y: hidden; word-wrap: break-word; white-space: pre-wrap; width: 100%; height: 34px;"
       @input="handleInput"
       @keydown="handleKeydown"
@@ -52,6 +52,9 @@
       :is-exporting="isExporting"
       :is-summarizing="isSummarizing"
       :message-count="messageCount"
+      :auto-approve-enabled="autoApproveEnabled"
+      :confirm-write="confirmWrite"
+      :confirm-edit="confirmEdit"
       @submit="handleSubmit"
       @stop="handleStop"
       @add-attachment="handleAddFiles"
@@ -61,6 +64,9 @@
       @model-select="(modelId) => emit('modelSelect', modelId)"
       @export-summary="() => emit('exportSummary')"
       @compact-now="() => emit('compactNow')"
+      @update:auto-approve-enabled="(val) => emit('update:autoApproveEnabled', val)"
+      @update:confirm-write="(val) => emit('update:confirmWrite', val)"
+      @update:confirm-edit="(val) => emit('update:confirmEdit', val)"
     />
 
     <!-- Slash Command Dropdown -->
@@ -142,7 +148,7 @@
 
 <script setup lang="ts">
 import { ref, computed, nextTick, inject, onMounted, onUnmounted } from 'vue'
-import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
+import type { PermissionMode } from '../../../shared/permissions'
 import FileIcon from './FileIcon.vue'
 import ButtonArea from './ButtonArea.vue'
 import type { AttachmentItem } from '../types/attachment'
@@ -157,6 +163,8 @@ interface Props {
   progressPercentage?: number
   placeholder?: string
   readonly?: boolean
+  disabled?: boolean  // 禁用输入框（例如：没有工作区时）
+  disabledMessage?: string  // 禁用时显示的消息
   showSearch?: boolean
   selectedModel?: string
   conversationWorking?: boolean
@@ -166,6 +174,9 @@ interface Props {
   isExporting?: boolean
   isSummarizing?: boolean
   messageCount?: number
+  autoApproveEnabled?: boolean
+  confirmWrite?: boolean
+  confirmEdit?: boolean
 }
 
 interface Emits {
@@ -181,6 +192,9 @@ interface Emits {
   (e: 'modelSelect', modelId: string): void
   (e: 'exportSummary'): void
   (e: 'compactNow'): void
+  (e: 'update:autoApproveEnabled', value: boolean): void
+  (e: 'update:confirmWrite', value: boolean): void
+  (e: 'update:confirmEdit', value: boolean): void
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -188,6 +202,8 @@ const props = withDefaults(defineProps<Props>(), {
   progressPercentage: 48.7,
   placeholder: '输入计划，@ 添加上下文，/ 使用命令...',
   readonly: false,
+  disabled: false,
+  disabledMessage: '',
   showSearch: false,
   selectedModel: 'claude-opus-4-5',
   conversationWorking: false,
@@ -196,7 +212,10 @@ const props = withDefaults(defineProps<Props>(), {
   permissionMode: 'default',
   isExporting: false,
   isSummarizing: false,
-  messageCount: 0
+  messageCount: 0,
+  autoApproveEnabled: true,
+  confirmWrite: true,
+  confirmEdit: true
 })
 
 const emit = defineEmits<Emits>()
@@ -208,6 +227,8 @@ const isLoading = ref(false)
 const textareaRef = ref<HTMLDivElement | null>(null)
 
 const isSubmitDisabled = computed(() => {
+  // 禁用时不能提交
+  if (props.disabled) return true
   return !content.value.trim() || isLoading.value
 })
 
@@ -829,6 +850,19 @@ defineExpose({
   content: attr(data-placeholder);
   color: var(--vscode-input-placeholderForeground);
   pointer-events: none;
+}
+
+/* 禁用状态样式 */
+.aislash-editor-input.input-disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  background-color: var(--vscode-input-background);
+}
+
+.aislash-editor-input.input-disabled:empty::before {
+  content: attr(data-placeholder);
+  color: var(--vscode-descriptionForeground);
+  font-style: italic;
 }
 
 /* 附件列表样式 - 水平排列的 pills */

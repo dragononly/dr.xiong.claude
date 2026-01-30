@@ -4,3 +4,7 @@
 
 export * from './IAIProvider';
 export * from './AIProviderFactory';
+export * from './SystemPrompts';
+export * from './ClaudeApiClient';
+export * from './GLMClient';
+export * from './XiongGeminiService';

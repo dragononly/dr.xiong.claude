@@ -64,7 +64,7 @@ const sessions = computed(() => {
     return [active];
   }
 
-  return filtered.slice(0, 10); // 最多显示 10 个标签
+  return filtered.slice(0, 4); // 最多显示 4 个标签
 });
 
 function isActive(session: Session): boolean {
@@ -122,8 +122,11 @@ async function close(session: Session): Promise<void> {
 .tab-bar {
   display: flex;
   align-items: center;
-  background: var(--vscode-tab-inactiveBackground, var(--vscode-sideBar-background));
-  border-bottom: 1px solid var(--vscode-panel-border);
+  /* 毛玻璃效果背景 */
+  background: color-mix(in srgb, var(--vscode-sideBar-background) 85%, transparent);
+  backdrop-filter: blur(12px) saturate(150%);
+  -webkit-backdrop-filter: blur(12px) saturate(150%);
+  border-bottom: 1px solid color-mix(in srgb, var(--vscode-panel-border) 60%, transparent);
   min-height: 35px;
   padding: 0 4px;
   gap: 2px;
@@ -150,26 +153,34 @@ async function close(session: Session): Promise<void> {
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  background: transparent;
-  border: none;
-  border-radius: 4px 4px 0 0;
+  /* 毛玻璃效果 */
+  background: color-mix(in srgb, var(--vscode-foreground) 5%, transparent);
+  border: 1px solid transparent;
+  border-radius: 6px 6px 0 0;
   cursor: pointer;
   color: var(--vscode-tab-inactiveForeground, var(--vscode-foreground));
   font-size: 12px;
   white-space: nowrap;
   max-width: 160px;
   min-width: 80px;
-  transition: background-color 0.15s, color 0.15s;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   position: relative;
 }
 
 .tab:hover {
-  background: var(--vscode-tab-hoverBackground, rgba(255, 255, 255, 0.1));
+  background: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+  border-color: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
+  transform: translateY(-1px);
 }
 
 .tab.active {
-  background: var(--vscode-tab-activeBackground, var(--vscode-editor-background));
+  /* 激活状态毛玻璃 */
+  background: color-mix(in srgb, var(--vscode-editor-background) 90%, transparent);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   color: var(--vscode-tab-activeForeground, var(--vscode-foreground));
+  border-color: color-mix(in srgb, var(--vscode-focusBorder) 30%, transparent);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--vscode-widget-shadow) 20%, transparent);
 }
 
 .tab.active::after {
@@ -234,19 +245,23 @@ async function close(session: Session): Promise<void> {
   justify-content: center;
   width: 28px;
   height: 28px;
-  border: none;
-  background: transparent;
+  border: 1px solid transparent;
+  /* 毛玻璃效果 */
+  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
   color: var(--vscode-foreground);
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.15s, background-color 0.15s;
+  opacity: 0.8;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   flex-shrink: 0;
 }
 
 .new-tab-btn:hover {
   opacity: 1;
-  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  background: color-mix(in srgb, var(--vscode-foreground) 15%, transparent);
+  border-color: color-mix(in srgb, var(--vscode-foreground) 15%, transparent);
+  transform: scale(1.05);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--vscode-widget-shadow) 20%, transparent);
 }
 
 .new-tab-btn .codicon {
@@ -259,19 +274,23 @@ async function close(session: Session): Promise<void> {
   justify-content: center;
   width: 28px;
   height: 28px;
-  border: none;
-  background: transparent;
+  border: 1px solid transparent;
+  /* 毛玻璃效果 */
+  background: color-mix(in srgb, var(--vscode-foreground) 8%, transparent);
   color: var(--vscode-foreground);
-  border-radius: 4px;
+  border-radius: 6px;
   cursor: pointer;
-  opacity: 0.7;
-  transition: opacity 0.15s, background-color 0.15s;
+  opacity: 0.8;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   flex-shrink: 0;
 }
 
 .settings-btn:hover {
   opacity: 1;
-  background: var(--vscode-toolbar-hoverBackground, rgba(255, 255, 255, 0.1));
+  background: color-mix(in srgb, var(--vscode-foreground) 15%, transparent);
+  border-color: color-mix(in srgb, var(--vscode-foreground) 15%, transparent);
+  transform: scale(1.05);
+  box-shadow: 0 2px 6px color-mix(in srgb, var(--vscode-widget-shadow) 20%, transparent);
 }
 
 .settings-btn .codicon {

@@ -8,8 +8,8 @@ node_modules/**
 src/**
 test/**
 assets/**
-docs/**
 records/**
+老版本/**
 tsconfig.json
 pnpm-lock.yaml
 pnpm-workspace.yaml
@@ -24,4 +24,11 @@ AGENTS.md
 CLAUDE.md
 TODO.md
 changelog.md
+功能.md
+角色设定.md
+路径方案.md
 **/claude-code-jetbrains-plugin/**
+# 排除开发文档，保留用户文档
+docs/AGENT_DESIGN.md
+docs/DEBUG.md
+docs/IMPLEMENTATION.md

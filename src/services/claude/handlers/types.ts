@@ -17,6 +17,7 @@ import { IClaudeSdkService } from '../ClaudeSdkService';
 import { IClaudeAgentService } from '../ClaudeAgentService';
 import { IWebViewService } from '../../webViewService';
 import { IClaudeConfigService } from '../../claudeConfigService';
+import { LocalTodoService } from '../../LocalTodoService';
 
 /**
  * Handler 上下文
@@ -36,6 +37,7 @@ export interface HandlerContext {
     agentService: IClaudeAgentService;
     webViewService: IWebViewService;
     claudeConfigService: IClaudeConfigService;
+    localTodoService: LocalTodoService;
 }
 
 /**

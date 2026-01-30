@@ -98,42 +98,61 @@ function handleMouseEnter() {
   display: flex;
   flex-direction: column;
   gap: 0.125rem;
-  padding: 0.125rem 0.375rem;
+  padding: 0.375rem 0.5rem;
   min-width: 0;
   cursor: pointer;
   color: var(--vscode-foreground);
+  border-radius: 8px;
+  margin: 2px 4px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Hover 样式：较浅的高亮 */
+/* Hover 样式 - 毛玻璃效果 */
 .dropdown-menu-item:hover {
-  background-color: color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
+  background: color-mix(in srgb, var(--vscode-foreground) 10%, transparent);
   color: var(--vscode-list-hoverForeground);
+  transform: translateX(2px);
 }
 
 /* Keyboard 模式下禁用 hover 样式，避免覆盖 selected */
 [data-nav="keyboard"] .dropdown-menu-item:hover {
   background-color: transparent;
   color: inherit;
+  transform: none;
 }
 
-/* Selected 样式：更明显的高亮 + 边框 */
+/* Selected 样式 - 毛玻璃高亮 */
 .dropdown-menu-item.selected {
-  background-color: color-mix(in srgb, var(--vscode-foreground) 20%, transparent);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--vscode-foreground) 15%, transparent),
+    color-mix(in srgb, var(--vscode-foreground) 10%, transparent)
+  );
   color: var(--vscode-list-hoverForeground);
-  outline: 1px dotted var(--vscode-contrastActiveBorder);
+  outline: 1px solid color-mix(in srgb, var(--vscode-foreground) 20%, transparent);
   outline-offset: -1px;
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--vscode-widget-shadow) 15%, transparent);
 }
 
-/* Hover + Selected 同时存在：selected 样式优先，背景稍深 */
+/* Hover + Selected 同时存在 */
 .dropdown-menu-item.selected:hover {
-  background-color: color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
-  outline: 1px solid var(--vscode-contrastActiveBorder);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--vscode-foreground) 20%, transparent),
+    color-mix(in srgb, var(--vscode-foreground) 15%, transparent)
+  );
+  outline: 1px solid color-mix(in srgb, var(--vscode-foreground) 25%, transparent);
 }
 
 /* Keyboard 模式下 selected + hover 保持 selected 样式不变 */
 [data-nav="keyboard"] .dropdown-menu-item.selected:hover {
-  background-color: color-mix(in srgb, var(--vscode-foreground) 20%, transparent);
-  outline: 1px dotted var(--vscode-contrastActiveBorder);
+  background: linear-gradient(
+    135deg,
+    color-mix(in srgb, var(--vscode-foreground) 15%, transparent),
+    color-mix(in srgb, var(--vscode-foreground) 10%, transparent)
+  );
+  outline: 1px solid color-mix(in srgb, var(--vscode-foreground) 20%, transparent);
+  transform: none;
 }
 
 .dropdown-menu-item:hover .file-info-container,

@@ -33,6 +33,7 @@
 import { computed } from 'vue';
 import ToolMessageWrapper from './common/ToolMessageWrapper.vue';
 import ToolError from './common/ToolError.vue';
+import { unescapeString, formatContent } from '@/utils/formatUtils';
 
 interface Props {
   toolUse?: any;
@@ -103,9 +104,9 @@ function formatValue(value: any): string {
   if (value === null) return 'null';
   if (value === undefined) return 'undefined';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'string') return value;
+  if (typeof value === 'string') return unescapeString(value);
   if (typeof value === 'object') {
-    return JSON.stringify(value, null, 2);
+    return formatContent(value);
   }
   return String(value);
 }

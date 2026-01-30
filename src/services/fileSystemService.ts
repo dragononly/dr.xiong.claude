@@ -123,6 +123,12 @@ export interface IFileSystemService {
 	createTempFile(fileName: string, content: string): Promise<string>;
 
 	/**
+	 * 创建临时目录
+	 * @returns 临时目录路径
+	 */
+	createTempDir(): Promise<string>;
+
+	/**
 	 * 解析并查找存在的路径（含模糊搜索）
 	 * @param filePath 文件路径
 	 * @param cwd 工作目录
@@ -578,6 +584,16 @@ export class FileSystemService implements IFileSystemService {
 		const filePath = path.join(tempDir, sanitized);
 		await require('fs').promises.writeFile(filePath, content, 'utf8');
 		return filePath;
+	}
+
+	/**
+	 * 创建临时目录
+	 */
+	async createTempDir(): Promise<string> {
+		const tempDir = await require('fs').promises.mkdtemp(
+			path.join(require('os').tmpdir(), 'claude-')
+		);
+		return tempDir;
 	}
 
 	/**

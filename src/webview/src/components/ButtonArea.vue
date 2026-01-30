@@ -6,7 +6,13 @@
         <!-- Mode Select -->
         <ModeSelect
           :permission-mode="permissionMode"
+          :auto-approve-enabled="autoApproveEnabled"
+          :confirm-write="confirmWrite"
+          :confirm-edit="confirmEdit"
           @mode-select="(mode) => emit('modeSelect', mode)"
+          @update:auto-approve-enabled="(val) => emit('update:autoApproveEnabled', val)"
+          @update:confirm-write="(val) => emit('update:confirmWrite', val)"
+          @update:confirm-edit="(val) => emit('update:confirmEdit', val)"
         />
 
         <!-- Model Select -->
@@ -176,7 +182,7 @@
 </template>
 
 <script setup lang="ts">
-import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
+import type { PermissionMode } from '../../../shared/permissions'
 import { ref, computed, inject } from 'vue'
 import TokenIndicator from './TokenIndicator.vue'
 import ModeSelect from './ModeSelect.vue'
@@ -201,6 +207,9 @@ interface Props {
   isExporting?: boolean
   isSummarizing?: boolean
   messageCount?: number
+  autoApproveEnabled?: boolean
+  confirmWrite?: boolean
+  confirmEdit?: boolean
 }
 
 interface Emits {
@@ -214,6 +223,9 @@ interface Emits {
   (e: 'modelSelect', modelId: string): void
   (e: 'exportSummary'): void
   (e: 'compactNow'): void
+  (e: 'update:autoApproveEnabled', value: boolean): void
+  (e: 'update:confirmWrite', value: boolean): void
+  (e: 'update:confirmEdit', value: boolean): void
 }
 
 const props = withDefaults(defineProps<Props>(), {
@@ -228,7 +240,10 @@ const props = withDefaults(defineProps<Props>(), {
   permissionMode: 'default',
   isExporting: false,
   isSummarizing: false,
-  messageCount: 0
+  messageCount: 0,
+  autoApproveEnabled: true,
+  confirmWrite: true,
+  confirmEdit: true
 })
 
 const emit = defineEmits<Emits>()
@@ -276,7 +291,7 @@ const fileCompletion = useCompletionDropdown({
 const isThinkingOn = computed(() => props.thinkingLevel !== 'off')
 
 const submitVariant = computed(() => {
-  // 对齐 React：busy 时始终显示停止按钮
+  // 核心规则：busy 时始终显示停止按钮
   if (props.conversationWorking) {
     return 'stop'
   }
@@ -288,6 +303,11 @@ const submitVariant = computed(() => {
 
   // 其余 -> 可发送
   return 'enabled'
+})
+
+// 停止按钮是否可用（在更多场景下保持可用）
+const canStop = computed(() => {
+  return props.conversationWorking
 })
 
 function handleSubmit() {

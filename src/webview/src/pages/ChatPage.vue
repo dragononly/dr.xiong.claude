@@ -12,6 +12,9 @@
         <h2 class="chat-title">{{ title }}</h2>
       </div>
       <div class="header-right">
+        <button class="header-btn" title="我的任务" @click="$emit('switchToTodos')">
+          <span class="codicon codicon-checklist"></span>
+        </button>
         <span v-if="balance !== null" class="balance-display" title="剩余额度">
           <span class="codicon codicon-credit-card"></span>
           ${{ balance.toFixed(2) }}
@@ -27,7 +30,7 @@
       <!-- <div class="chatContainer"> -->
         <div
           ref="containerEl"
-          :class="['messagesContainer', 'custom-scroll-container', { dimmed: permissionRequestsLen > 0 }]"
+          :class="['messagesContainer', 'custom-scroll-container']"
         >
           <template v-if="messages.length === 0">
             <div v-if="isBusy" class="emptyState">
@@ -64,17 +67,25 @@
             <div v-if="isBusy" class="spinnerRow">
               <Spinner :size="16" :permission-mode="permissionMode" />
             </div>
+            <Transition name="fade-complete" mode="out-in">
+              <div v-if="taskJustCompleted && !isBusy" key="completed" class="completedRow">
+                <span class="completed-icon">✓</span>
+                <span class="completed-text">已完成</span>
+              </div>
+            </Transition>
             <div ref="endEl" />
           </template>
         </div>
 
         <div class="inputContainer">
-          <PermissionRequestModal
-            v-if="pendingPermission && toolContext"
-            :request="pendingPermission"
-            :context="toolContext"
-            :on-resolve="handleResolvePermission"
-            data-permission-panel="1"
+          <!-- 任务面板 -->
+          <div class="panels-row">
+            <TaskPanel class="task-panel-wrapper" @execute-task="handleExecuteTask" />
+          </div>
+          <!-- Copilot 风格的待确认文件列表 -->
+          <PendingFilesList
+            v-if="permissionRequestsLen > 0"
+            :permission-requests="permissionRequests"
           />
           <ChatInputBox
             :show-progress="true"
@@ -87,6 +98,11 @@
             :is-exporting="session?.isExporting.value ?? false"
             :is-summarizing="session?.isSummarizing.value ?? false"
             :message-count="messages.length"
+            :auto-approve-enabled="autoApproveEnabled"
+            :confirm-write="confirmWrite"
+            :confirm-edit="confirmEdit"
+            :disabled="!hasWorkspace"
+            :disabled-message="'请先在 VSCode 中打开一个项目文件夹'"
             @submit="handleSubmit"
             @stop="handleStop"
             @add-attachment="handleAddAttachment"
@@ -96,6 +112,9 @@
             @model-select="handleModelSelect"
             @export-summary="handleExportSummary"
             @compact-now="handleCompactNow"
+            @update:auto-approve-enabled="handleAutoApproveEnabledChange"
+            @update:confirm-write="handleConfirmWriteChange"
+            @update:confirm-edit="handleConfirmEditChange"
           />
         </div>
       <!-- </div> -->
@@ -104,27 +123,32 @@
 </template>
 
 <script setup lang="ts">
-  import { ref, computed, inject, onMounted, onUnmounted, nextTick, watch } from 'vue';
-  import { RuntimeKey } from '../composables/runtimeContext';
+  import { ref, shallowRef, computed, inject, onMounted, onUnmounted, nextTick, watch } from 'vue';
+  import { RuntimeKey, PermissionRequestsKey } from '../composables/runtimeContext';
   import { useSession } from '../composables/useSession';
   import type { Session } from '../core/Session';
-  import type { PermissionRequest } from '../core/PermissionRequest';
+  import { PermissionRequest } from '../core/PermissionRequest';
   import type { ToolContext } from '../types/tool';
   import type { AttachmentItem } from '../types/attachment';
   import { convertFileToAttachment } from '../types/attachment';
   import ChatInputBox from '../components/ChatInputBox.vue';
   import TabBar from '../components/TabBar.vue';
   import PermissionRequestModal from '../components/PermissionRequestModal.vue';
+  import PendingFilesList from '../components/PendingFilesList.vue';
+  import TaskPanel from '../components/TaskPanel.vue';
   import Spinner from '../components/Messages/WaitingIndicator.vue';
   import ClaudeWordmark from '../components/ClaudeWordmark.vue';
   import RandomTip from '../components/RandomTip.vue';
   import MessageRenderer from '../components/Messages/MessageRenderer.vue';
   import { useKeybinding } from '../utils/useKeybinding';
   import { useSignal } from '@gn8/alien-signals-vue';
-  import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+  import type { PermissionMode } from '../../../shared/permissions';
 
   const runtime = inject(RuntimeKey);
   if (!runtime) throw new Error('[ChatPage] runtime not provided');
+  
+  // 从 App 层级注入权限请求上下文
+  const permissionRequestsContext = inject(PermissionRequestsKey);
 
   // 余额状态
   const balance = ref<number | null>(null);
@@ -168,6 +192,10 @@
         );
       },
     },
+    // 传递权限请求列表，用于在工具消息中显示内联确认按钮
+    permissionRequests: permissionRequests.value,
+    // 传递会话忙碌状态，用于在流式输出期间保持工具展开
+    isBusy: isBusy.value,
   }));
 
   // 订阅 activeSession（alien-signal → Vue ref）
@@ -175,24 +203,94 @@
     runtime.sessionStore.activeSession
   );
 
-  // 使用 useSession 将 alien-signals 转换为 Vue Refs
-  const session = computed(() => {
-    const raw = activeSessionRaw.value;
-    return raw ? useSession(raw) : null;
-  });
+  // 🔧 修复：使用 shallowRef 缓存 useSession 的结果，避免每次访问都重新创建
+  const sessionCache = shallowRef<ReturnType<typeof useSession> | null>(null);
 
-  // 现在所有访问都使用 Vue Ref（.value）
-  const title = computed(() => session.value?.summary.value || 'New Conversation');
-  const messages = computed<any[]>(() => session.value?.messages.value ?? []);
-  const isBusy = computed(() => session.value?.busy.value ?? false);
-  const permissionMode = computed(
-    () => session.value?.permissionMode.value ?? 'default'
+  // 当 activeSession 变化时更新缓存
+  watch(
+    () => activeSessionRaw.value,
+    (raw) => {
+      console.log('[ChatPage] activeSession changed:', !!raw);
+      if (raw) {
+        sessionCache.value = useSession(raw);
+      } else {
+        sessionCache.value = null;
+      }
+    },
+    { immediate: true }
   );
-  const permissionRequests = computed(
-    () => session.value?.permissionRequests.value ?? []
-  );
+
+  // 使用缓存的 session
+  const session = computed(() => sessionCache.value);
+
+  // 现在所有访问都使用 Vue Ref（.value），添加更严格的防护
+  const title = computed(() => {
+    const s = session.value;
+    if (!s || !s.summary) return 'New Conversation';
+    return s.summary.value || 'New Conversation';
+  });
+  const messages = computed<any[]>(() => {
+    const s = session.value;
+    if (!s || !s.messages) return [];
+    return s.messages.value ?? [];
+  });
+  const isBusy = computed(() => {
+    const s = session.value;
+    if (!s || !s.busy) return false;
+    return s.busy.value ?? false;
+  });
+  const taskJustCompleted = computed(() => {
+    const s = session.value;
+    if (!s || !s.taskJustCompleted) return false;
+    return s.taskJustCompleted.value ?? false;
+  });
+  const permissionMode = computed(() => {
+    const s = session.value;
+    if (!s || !s.permissionMode) return 'default';
+    return s.permissionMode.value ?? 'default';
+  });
+  
+  // ======= 权限请求：从 App 层级注入，按当前 session 过滤 =======
+  // 所有权限请求（直接从注入的 context 获取）
+  const allPermissionRequests = computed(() => permissionRequestsContext?.requests.value ?? []);
+  
+  // 过滤出当前 session 的权限请求
+  const permissionRequests = computed(() => {
+    const currentChannelId = activeSessionRaw.value?.claudeChannelId?.();
+    const all = allPermissionRequests.value;
+    
+    // 如果没有 channelId，显示所有请求（避免因为 session 未初始化而丢失请求）
+    if (!currentChannelId) {
+      if (all.length > 0) {
+        console.log('[ChatPage] permissionRequests: 无 channelId，显示所有', all.length, '个请求');
+      }
+      return all;
+    }
+    
+    const filtered = all.filter(req => req.channelId === currentChannelId);
+    if (all.length > 0) {
+      console.log('[ChatPage] permissionRequests: channelId=', currentChannelId, 'all=', all.length, 'filtered=', filtered.length);
+    }
+    return filtered;
+  });
   const permissionRequestsLen = computed(() => permissionRequests.value.length);
-  const pendingPermission = computed(() => permissionRequests.value[0] as any);
+  
+  // 处理权限请求的解决（允许或拒绝）
+  function handlePermissionResolve(request: PermissionRequest, allow: boolean) {
+    console.log('[ChatPage] 权限请求解决:', request.toolName, allow ? '允许' : '拒绝');
+    if (allow) {
+      request.accept(request.inputs, []);
+    } else {
+      request.reject('User rejected the operation', true);
+    }
+  }
+  
+  // 🔍 调试：监控权限请求数量变化（使用 watch 而不是在 computed 里打日志）
+  watch([allPermissionRequests, permissionRequests], ([all, filtered]) => {
+    const currentChannelId = activeSessionRaw.value?.claudeChannelId?.();
+    console.log('[ChatPage] 🔔 权限请求变化: all=', all.length, 'filtered=', filtered.length, 'channelId=', currentChannelId);
+  }, { immediate: true });
+  
   const platform = computed(() => runtime.appContext.platform);
   const hasWorkspace = computed(() => runtime.appContext.hasWorkspace);
 
@@ -220,6 +318,11 @@
 
   // 附件状态管理
   const attachments = ref<AttachmentItem[]>([]);
+
+  // 自动审批配置状态
+  const autoApproveEnabled = ref(true);  // 总开关：默认启用
+  const confirmWrite = ref(true);        // Write 工具需要确认
+  const confirmEdit = ref(true);         // Edit 工具需要确认
 
   // 记录上次消息数量，用于判断是否需要滚动
   let prevCount = 0;
@@ -287,6 +390,9 @@
     scrollToBottom();
   });
 
+  // 存储 autoTaskDisabled 事件监听器的清理函数
+  let autoTaskDisabledCleanup: (() => void) | null = null;
+
   onMounted(async () => {
     prevCount = messages.value.length;
     await nextTick();
@@ -294,10 +400,46 @@
 
     // 获取余额
     fetchBalance();
+
+    // 初始化时同步自动审批配置到后端
+    syncAutoApproveConfig();
+
+    // 监听自动任务被禁用事件，立即清空待执行任务
+    try {
+      const connection = await runtime.connectionManager.get();
+      autoTaskDisabledCleanup = connection.autoTaskDisabled.add(() => {
+        console.log('[ChatPage] 收到自动任务禁用通知，清空待执行任务');
+        pendingAutoTask.value = null;
+      });
+    } catch (e) {
+      console.error('[ChatPage] 监听 autoTaskDisabled 失败:', e);
+    }
   });
+
+  // 同步自动审批配置到后端
+  async function syncAutoApproveConfig() {
+    try {
+      const connection = await runtime.connectionManager.get();
+      console.log('[ChatPage] 初始化同步自动审批配置:', {
+        autoApproveEnabled: autoApproveEnabled.value,
+        confirmWrite: confirmWrite.value,
+        confirmEdit: confirmEdit.value
+      });
+      await connection.setAutoApproveConfig({
+        autoApproveEnabled: autoApproveEnabled.value,
+        confirmWrite: confirmWrite.value,
+        confirmEdit: confirmEdit.value
+      });
+      console.log('[ChatPage] 自动审批配置同步成功');
+    } catch (e) {
+      console.error('[ChatPage] 自动审批配置同步失败:', e);
+    }
+  }
 
   onUnmounted(() => {
     try { unregisterToggle?.(); } catch {}
+    // 清理 autoTaskDisabled 事件监听器
+    try { autoTaskDisabledCleanup?.(); } catch {}
     // 🚀 清理滚动相关定时器
     if (scrollRAF !== null) {
       cancelAnimationFrame(scrollRAF);
@@ -342,6 +484,57 @@
       console.error('[ChatPage] send failed', e);
     }
   }
+
+  // 待执行的自动任务（用于在 Claude 空闲后自动执行）
+  const pendingAutoTask = ref<string | null>(null);
+
+  // 处理自动任务执行
+  async function handleExecuteTask(prompt: string) {
+    console.log('[ChatPage] 收到自动任务请求:', prompt);
+    const s = session.value;
+    
+    if (!s) {
+      console.log('[ChatPage] 无法执行任务: session 不存在');
+      return;
+    }
+
+    if (isBusy.value) {
+      console.log('[ChatPage] Claude 正忙，任务已加入待执行队列');
+      pendingAutoTask.value = prompt;
+      return;
+    }
+
+    try {
+      pendingAutoTask.value = null; // 清除待执行任务
+      await s.send(prompt, []);
+    } catch (e) {
+      console.error('[ChatPage] 执行任务失败', e);
+    }
+  }
+
+  // 监听 isBusy 变化，当空闲时执行待执行任务
+  watch(isBusy, async (newBusy, oldBusy) => {
+    // 从忙碌变为空闲
+    if (oldBusy && !newBusy) {
+      console.log('[ChatPage] Claude 变为空闲状态');
+      
+      // 延迟一小段时间，确保上一个任务完全结束
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // 检查是否有待执行任务
+      if (pendingAutoTask.value && session.value && !isBusy.value) {
+        console.log('[ChatPage] 执行待执行的自动任务:', pendingAutoTask.value);
+        const prompt = pendingAutoTask.value;
+        pendingAutoTask.value = null;
+        
+        try {
+          await session.value.send(prompt, []);
+        } catch (e) {
+          console.error('[ChatPage] 执行待执行任务失败', e);
+        }
+      }
+    }
+  });
 
   async function handleToggleThinking() {
     const s = session.value;
@@ -460,16 +653,58 @@
     await s.compactWithSummary();
   }
 
-  // Permission modal handler
-  function handleResolvePermission(request: PermissionRequest, allow: boolean) {
+  // 自动审批确认状态变更处理
+  async function handleAutoApproveEnabledChange(value: boolean) {
+    autoApproveEnabled.value = value;
+    console.log('[ChatPage] Auto approve enabled changed:', value);
+
+    // 通知后端更新自动审批配置
     try {
-      if (allow) {
-        request.accept(request.inputs);
-      } else {
-        request.reject('User denied', true);
-      }
+      const connection = await runtime.connectionManager.get();
+      const result = await connection.setAutoApproveConfig({
+        autoApproveEnabled: value,
+        confirmWrite: confirmWrite.value,
+        confirmEdit: confirmEdit.value
+      });
+      console.log('[ChatPage] setAutoApproveConfig result:', result);
     } catch (e) {
-      console.error('[ChatPage] permission resolve failed', e);
+      console.error('[ChatPage] Failed to update auto-approve config:', e);
+    }
+  }
+
+  async function handleConfirmWriteChange(value: boolean) {
+    confirmWrite.value = value;
+    console.log('[ChatPage] Confirm write changed:', value);
+
+    // 通知后端更新自动审批配置
+    try {
+      const connection = await runtime.connectionManager.get();
+      const result = await connection.setAutoApproveConfig({
+        autoApproveEnabled: autoApproveEnabled.value,
+        confirmWrite: value,
+        confirmEdit: confirmEdit.value
+      });
+      console.log('[ChatPage] setAutoApproveConfig result:', result);
+    } catch (e) {
+      console.error('[ChatPage] Failed to update auto-approve config:', e);
+    }
+  }
+
+  async function handleConfirmEditChange(value: boolean) {
+    confirmEdit.value = value;
+    console.log('[ChatPage] Confirm edit changed:', value);
+
+    // 通知后端更新自动审批配置
+    try {
+      const connection = await runtime.connectionManager.get();
+      const result = await connection.setAutoApproveConfig({
+        autoApproveEnabled: autoApproveEnabled.value,
+        confirmWrite: confirmWrite.value,
+        confirmEdit: value
+      });
+      console.log('[ChatPage] setAutoApproveConfig result:', result);
+    } catch (e) {
+      console.error('[ChaFailed to update auto-approve config:', e);
     }
   }
 </script>
@@ -538,6 +773,30 @@
     display: flex;
     align-items: center;
     gap: 4px;
+  }
+
+  .header-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: transparent;
+    color: var(--vscode-titleBar-activeForeground);
+    border-radius: 3px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    opacity: 0.7;
+  }
+
+  .header-btn .codicon {
+    font-size: 12px;
+  }
+
+  .header-btn:hover {
+    background: var(--vscode-toolbar-hoverBackground);
+    opacity: 1;
   }
 
   .balance-display {
@@ -611,11 +870,6 @@
       var(--vscode-sideBar-background) 100%
     );
   }
-  .messagesContainer.dimmed {
-    filter: blur(1px);
-    opacity: 0.5;
-    pointer-events: none;
-  }
 
   .msg-list {
     display: flex;
@@ -659,6 +913,19 @@
     border-top: 1px solid var(--vscode-panel-border);
     background: var(--vscode-sideBar-background);
     box-shadow: 0 -8px 20px rgba(0, 0, 0, 0.08);
+  }
+
+  /* 任务面板布局 */
+  .panels-row {
+    display: flex;
+    flex-direction: row;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+
+  .task-panel-wrapper {
+    flex: 1;
+    min-width: 0;
   }
 
   /* 底部对话框区域钉在底部 */
@@ -709,5 +976,59 @@
   .noWorkspaceHint .hint-sub {
     font-size: 12px;
     color: var(--vscode-descriptionForeground);
+  }
+
+  /* 任务完成提示样式 */
+  .completedRow {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px 4px 24px;
+    color: var(--vscode-testing-iconPassed, #4caf50);
+    font-size: 12px;
+    font-weight: 500;
+  }
+
+  .completed-icon {
+    font-size: 14px;
+    font-weight: bold;
+  }
+
+  .completed-text {
+    color: var(--vscode-descriptionForeground);
+  }
+
+  /* 完成提示进入动画（保持显示直到用户发新消息） */
+  .fade-complete-enter-active {
+    transition: opacity 0.3s ease-out;
+  }
+
+  .fade-complete-enter-from {
+    opacity: 0;
+  }
+</style>
+
+<!-- 非 scoped 样式，用于 Teleport 渲染的元素 -->
+<style>
+  .permission-modals-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.3);
+    z-index: 1000;
+    display: flex;
+    align-items: flex-end;
+    padding: 16px;
+  }
+
+  .permission-modals-container {
+    width: 100%;
+    max-height: 60vh;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
   }
 </style>

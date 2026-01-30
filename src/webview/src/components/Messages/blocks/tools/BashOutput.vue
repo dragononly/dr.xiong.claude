@@ -43,6 +43,7 @@
 import { computed } from 'vue';
 import ToolMessageWrapper from './common/ToolMessageWrapper.vue';
 import ToolError from './common/ToolError.vue';
+import { unescapeString } from '@/utils/formatUtils';
 
 interface Props {
   toolUse?: any;
@@ -83,13 +84,13 @@ const outputContent = computed(() => {
     const stderr = props.toolUseResult.stderr || '';
 
     if (stdout && stderr) {
-      return `${stdout}\n\n[stderr]\n${stderr}`;
+      return unescapeString(`${stdout}\n\n[stderr]\n${stderr}`);
     }
     if (stdout) {
-      return stdout;
+      return unescapeString(stdout);
     }
     if (stderr) {
-      return `[stderr]\n${stderr}`;
+      return unescapeString(`[stderr]\n${stderr}`);
     }
   }
 
@@ -106,17 +107,17 @@ const outputContent = computed(() => {
     const stderr = stderrMatch ? stderrMatch[1].trim() : '';
 
     if (stdout && stderr) {
-      return `${stdout}\n\n[stderr]\n${stderr}`;
+      return unescapeString(`${stdout}\n\n[stderr]\n${stderr}`);
     }
     if (stdout) {
-      return stdout;
+      return unescapeString(stdout);
     }
     if (stderr) {
-      return `[stderr]\n${stderr}`;
+      return unescapeString(`[stderr]\n${stderr}`);
     }
 
-    // 如果没有匹配到，返回原始内容
-    return content;
+    // 如果没有匹配到，返回原始内容（也处理转义字符）
+    return unescapeString(content);
   }
 
   return '';

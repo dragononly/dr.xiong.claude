@@ -2,7 +2,7 @@ import { signal } from "alien-signals";
 import { AsyncQueue } from "./AsyncQueue";
 import { EventEmitter } from "../utils/events";
 import { PermissionRequest } from "../core/PermissionRequest";
-import type { PermissionResult, PermissionMode } from "@anthropic-ai/claude-agent-sdk";
+import type { PermissionResult, PermissionMode } from "../../../shared/permissions";
 import type {
   ExtensionRequestResponse,
   ExtensionToWebViewMessage,
@@ -53,6 +53,20 @@ export abstract class BaseTransport {
   /** 工作区变化事件 */
   readonly workspaceChanged: EventEmitter<WorkspaceInfo> =
     new EventEmitter<WorkspaceInfo>();
+
+  /** 自动任务发现事件 */
+  readonly autoTaskFound: EventEmitter<{
+    tasks: Array<{ title: string; status: string; section: string }>;
+    prompt: string;
+  }> = new EventEmitter();
+
+  /** 任务文件变化事件（用于实时 UI 更新） */
+  readonly taskFileChanged: EventEmitter<{
+    tasks: Array<{ title: string; status: string; section: string }>;
+  }> = new EventEmitter();
+
+  /** 自动任务禁用事件 */
+  readonly autoTaskDisabled: EventEmitter<void> = new EventEmitter();
 
   protected readonly fromHost = new AsyncQueue<ExtensionToWebViewMessage>();
   protected readonly streams = new Map<string, AsyncQueue<any>>();
@@ -285,7 +299,10 @@ export abstract class BaseTransport {
     config: {
       apiKey: string | null;
       baseUrl: string | null;
+      claudeCliPath?: string | null;
       isConfigured: boolean;
+      /** 存储模式：secretStorage（安全存储）或 globalState（备用存储） */
+      storageMode?: 'secretStorage' | 'globalState';
     };
   }> {
     return this.sendRequest({ type: "get_claude_config" });
@@ -303,6 +320,13 @@ export abstract class BaseTransport {
    */
   setBaseUrl(baseUrl: string): Promise<{ success: boolean; error?: string }> {
     return this.sendRequest({ type: "set_base_url", baseUrl });
+  }
+
+  /**
+   * 设置 Claude CLI 路径
+   */
+  setClaudeCliPath(cliPath: string): Promise<{ success: boolean; error?: string }> {
+    return this.sendRequest({ type: "set_claude_cli_path", cliPath });
   }
 
   /**
@@ -331,6 +355,109 @@ export abstract class BaseTransport {
     error?: string;
   }> {
     return this.sendRequest({ type: "get_usage", startDate, endDate });
+  }
+
+  /**
+   * 检查环境（Claude Code CLI 和 Git）
+   */
+  checkEnvironment(): Promise<{
+    claudeCode: {
+      installed: boolean;
+      version?: string;
+      path?: string;
+    };
+    git: {
+      installed: boolean;
+      version?: string;
+    };
+    allReady: boolean;
+  }> {
+    return this.sendRequest({ type: "check_environment" });
+  }
+
+  /**
+   * 设置自动审批配置
+   */
+  setAutoApproveConfig(config: { autoApproveEnabled: boolean; confirmWrite: boolean; confirmEdit: boolean }): Promise<{ success: boolean }> {
+    return this.sendRequest({ type: "set_auto_approve_config", config });
+  }
+
+  readTaskFile(): Promise<{ success: boolean; content?: string; error?: string }> {
+    return this.sendRequest({ type: "read_task_file" });
+  }
+
+  // ============================================================================
+  // 自动任务 API
+  // ============================================================================
+
+  /**
+   * 启用自动任务
+   */
+  enableAutoTask(interval?: number): Promise<{
+    success: boolean;
+    config: { enabled: boolean; checkInterval: number };
+  }> {
+    return this.sendRequest({ type: "enable_auto_task", interval });
+  }
+
+  /**
+   * 禁用自动任务
+   */
+  disableAutoTask(): Promise<{ success: boolean }> {
+    return this.sendRequest({ type: "disable_auto_task" });
+  }
+
+  /**
+   * 获取自动任务配置
+   */
+  getAutoTaskConfig(): Promise<{
+    config: { enabled: boolean; checkInterval: number };
+  }> {
+    return this.sendRequest({ type: "get_auto_task_config" });
+  }
+
+  /**
+   * 设置自动任务检查间隔
+   */
+  setAutoTaskInterval(interval: number): Promise<{
+    success: boolean;
+    config: { enabled: boolean; checkInterval: number };
+  }> {
+    return this.sendRequest({ type: "set_auto_task_interval", interval });
+  }
+
+  /**
+   * 手动触发任务检查
+   */
+  checkTasksNow(): Promise<{
+    tasks: Array<{
+      title: string;
+      status: 'pending' | 'in-progress' | 'completed';
+      section: 'in-progress' | 'pending' | 'completed';
+    }>;
+  }> {
+    return this.sendRequest({ type: "check_tasks_now" });
+  }
+
+  /**
+   * 撤回文件修改
+   */
+  revertFileChange(snapshotId: string): Promise<{
+    success: boolean;
+    filePath?: string;
+    error?: string;
+  }> {
+    return this.sendRequest({ type: "revert_file_change", snapshotId });
+  }
+
+  /**
+   * 查看快照差异（在 VSCode 中打开 diff 视图）
+   */
+  viewSnapshotDiff(snapshotId: string): Promise<{
+    success: boolean;
+    error?: string;
+  }> {
+    return this.sendRequest({ type: "view_snapshot_diff", snapshotId });
   }
 
   onPermissionRequested(callback: (request: PermissionRequest) => void): void {
@@ -428,11 +555,19 @@ export abstract class BaseTransport {
     const req: any = (message as any).request;
     switch (req.type) {
       case "tool_permission_request": {
+        console.log('[BaseTransport] 开始处理 tool_permission_request');
         const response = await this.handleToolPermissionRequest(
           (message.channelId ?? "") as string,
           req as ToolPermissionRequest
         );
-        this.send({ type: "response", requestId: message.requestId, response });
+        console.log('[BaseTransport] handleToolPermissionRequest 已返回:', response);
+        console.log('[BaseTransport] 准备发送 response, requestId:', message.requestId);
+        try {
+          this.send({ type: "response", requestId: message.requestId, response });
+          console.log('[BaseTransport] response 已发送');
+        } catch (e) {
+          console.error('[BaseTransport] 发送 response 失败:', e);
+        }
         break;
       }
       case "insert_at_mention": {
@@ -482,6 +617,31 @@ export abstract class BaseTransport {
         console.log("[BaseTransport] 工作区变化:", info);
         break;
       }
+      case "auto_task_found": {
+        // 自动任务发现通知
+        const taskReq = req as { tasks: Array<{ title: string; status: string; section: string }>; prompt: string };
+        console.log("[BaseTransport] 自动任务发现:", taskReq.tasks.length, "个任务");
+        this.autoTaskFound.emit({
+          tasks: taskReq.tasks,
+          prompt: taskReq.prompt,
+        });
+        break;
+      }
+      case "task_file_changed": {
+        // 任务文件变化通知（用于实时 UI 更新）
+        const fileChangeReq = req as { tasks: Array<{ title: string; status: string; section: string }> };
+        console.log("[BaseTransport] 任务文件变化:", fileChangeReq.tasks.length, "个任务");
+        this.taskFileChanged.emit({
+          tasks: fileChangeReq.tasks,
+        });
+        break;
+      }
+      case "auto_task_disabled": {
+        // 自动任务禁用通知
+        console.log("[BaseTransport] 自动任务已禁用");
+        this.autoTaskDisabled.emit();
+        break;
+      }
       default:
         console.warn("[BaseTransport] Unhandled request", req);
     }
@@ -491,6 +651,7 @@ export abstract class BaseTransport {
     channelId: string,
     request: ToolPermissionRequest
   ): Promise<ExtensionRequestResponse> {
+    console.log('[BaseTransport] 收到权限请求:', channelId, request.toolName);
     let trackedRequest: PermissionRequest | undefined;
     return new Promise<ExtensionRequestResponse>((resolve) => {
       const permissionRequest = new PermissionRequest(
@@ -502,6 +663,7 @@ export abstract class BaseTransport {
       trackedRequest = permissionRequest;
 
       permissionRequest.onResolved((resolution: PermissionResult) => {
+        console.log('[BaseTransport] 权限请求已解决:', channelId, request.toolName, resolution);
         resolve({ type: "tool_permission_response", result: resolution });
         this.permissionRequests(
           this.permissionRequests().filter((i) => i !== permissionRequest)
@@ -512,6 +674,7 @@ export abstract class BaseTransport {
         ...this.permissionRequests(),
         permissionRequest,
       ]);
+      console.log('[BaseTransport] 权限请求已添加, 当前数量:', this.permissionRequests().length);
       this.permissionRequested.emit(permissionRequest);
     }).finally(() => {
       if (trackedRequest) {

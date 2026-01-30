@@ -163,6 +163,9 @@ function createToolResultBlock(raw: any): ToolResultBlock {
     tool_use_id: raw.tool_use_id,
     content: raw.content,
     is_error: raw.is_error,
+    // 传递撤回相关字段（用于文件写入/编辑操作的撤回）
+    snapshotId: raw.snapshotId,
+    canRevert: raw.canRevert,
   };
 }
 

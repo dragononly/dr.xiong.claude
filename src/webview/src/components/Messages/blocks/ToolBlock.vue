@@ -20,6 +20,7 @@ import ReadTool from './tools/Read.vue';
 import WriteTool from './tools/Write.vue';
 import EditTool from './tools/Edit.vue';
 import BashTool from './tools/Bash.vue';
+import BashTerminalTool from './tools/BashTerminal.vue';
 import GlobTool from './tools/Glob.vue';
 import GrepTool from './tools/Grep.vue';
 import BashOutputTool from './tools/BashOutput.vue';
@@ -71,18 +72,28 @@ const toolComponent = computed(() => {
 
   switch (name) {
     case 'Read':
+    case 'file_read':
       return ReadTool;
     case 'Write':
+    case 'file_write':
       return WriteTool;
     case 'Edit':
+    case 'file_edit':
       return EditTool;
     case 'Bash':
+    case 'bash_exec':
       return BashTool;
+    case 'BashTerminal':
+    case 'bash_terminal':
+      return BashTerminalTool;
     case 'Glob':
+    case 'glob_search':
       return GlobTool;
     case 'Grep':
+    case 'grep_search':
       return GrepTool;
     case 'BashOutput':
+    case 'bash_output':
       return BashOutputTool;
     case 'ExitPlanMode':
       return ExitPlanModeTool;

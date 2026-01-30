@@ -65,7 +65,7 @@ export class WebViewService implements IWebViewService {
 	constructor(
 		private readonly context: vscode.ExtensionContext,
 		@ILogService private readonly logService: ILogService
-	) {}
+	) { }
 
 	/**
 	 * 实现 WebviewViewProvider.resolveWebviewView（侧边栏宿主）
@@ -107,10 +107,12 @@ export class WebViewService implements IWebViewService {
 
 	/**
 	 * 广播消息到所有已注册的 WebView
+	 * 
+	 * 消息路由规则：
+	 * - response 类型的消息：广播到所有 WebView（因为任何页面都可能发起请求）
+	 * - 其他消息：只发送到 sidebar chat（保持原有行为）
 	 */
 	postMessage(message: any): void {
-		// 目前 ClaudeAgentService 只需要与侧边栏聊天视图通信
-		// 因此这里只向 host === 'sidebar' 且 page === 'chat' 的 WebView 发送消息
 		if (this.webviews.size === 0) {
 			this.logService.warn('[WebViewService] 当前没有可用的 WebView 实例，消息将被丢弃');
 			return;
@@ -121,16 +123,26 @@ export class WebViewService implements IWebViewService {
 			message
 		};
 
+		// 判断是否为响应消息（需要广播到所有 WebView）
+		const isResponseMessage = message && message.type === 'response';
+
 		const toRemove: vscode.Webview[] = [];
 
 		for (const webview of this.webviews) {
 			const config = this.webviewConfigs.get(webview);
-			if (!config || config.host !== 'sidebar' || (config.page && config.page !== 'chat')) {
-				continue;
+
+			// 响应消息广播到所有 WebView；其他消息只发送到 sidebar chat
+			if (!isResponseMessage) {
+				if (!config || config.host !== 'sidebar' || (config.page && config.page !== 'chat')) {
+					continue;
+				}
 			}
 
 			try {
 				webview.postMessage(payload);
+				if (isResponseMessage) {
+					this.logService.info(`[WebViewService] 响应消息已发送到 ${config?.host}/${config?.page}`);
+				}
 			} catch (error) {
 				this.logService.warn('[WebViewService] 向 WebView 发送消息失败，将移除该实例', error as Error);
 				toRemove.push(webview);
@@ -174,7 +186,7 @@ export class WebViewService implements IWebViewService {
 		this.logService.info(`[WebViewService] 创建主编辑器 WebView 面板: page=${page}, id=${key}`);
 
 		const panel = vscode.window.createWebviewPanel(
-			'claudix.pageView',
+			'xiong.pageView',
 			title,
 			vscode.ViewColumn.Active,
 			{

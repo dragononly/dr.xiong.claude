@@ -56,10 +56,14 @@ import type {
     OpenClaudeInTerminalResponse,
     WriteFileRequest,
     WriteFileResponse,
+    CheckEnvironmentRequest,
+    CheckEnvironmentResponse,
+    SetClaudeCliPathRequest,
+    SetClaudeCliPathResponse,
 } from '../../../shared/messages';
 import type { HandlerContext } from './types';
-import type { PermissionMode, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { AsyncStream } from '../transport/AsyncStream';
+import type { PermissionMode } from '../../../shared/permissions';
+
 /**
  * 初始化请求
  */
@@ -75,7 +79,7 @@ export async function handleInit(
     // const authStatus = null;
 
     // 获取模型设置
-    const modelSetting = configService.getValue<string>('claudix.selectedModel') || 'default';
+    const modelSetting = configService.getValue<string>('xiong.selectedModel') || 'claude-opus-4-5-20251101';
 
     // 获取默认工作目录
     const defaultWorkspaceFolder = workspaceService.getDefaultWorkspaceFolder();
@@ -264,7 +268,7 @@ export async function handleNewConversationTab(
     const { logService } = context;
 
     try {
-        await vscode.commands.executeCommand("claudix.chatView.focus");
+        await vscode.commands.executeCommand("xiong.chatView.focus");
     } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         logService.warn(`Failed to focus chat view: ${message}`);
@@ -624,7 +628,7 @@ export async function handleOpenConfigFile(
     try {
         // VS Code 设置
         if (configType === "vscode") {
-            await vscode.commands.executeCommand('workbench.action.openSettings', 'claudix');
+            await vscode.commands.executeCommand('workbench.action.openSettings', 'xiong');
         }
         // 用户配置文件
         else {
@@ -671,38 +675,41 @@ export async function handleOpenClaudeInTerminal(
 // ============================================================================
 
 /**
- * 加载配置缓存
+ * 默认支持的 Slash Commands
+ */
+const DEFAULT_SLASH_COMMANDS = [
+    { name: '/clear', description: '清除当前对话历史' },
+    { name: '/help', description: '显示帮助信息' },
+    { name: '/bug', description: '报告 bug 或问题' },
+    { name: '/review', description: '代码审查' },
+    { name: '/init', description: '初始化新项目' },
+];
+
+/**
+ * 默认支持的模型列表
+ */
+const DEFAULT_MODELS = [
+    // Claude 模型
+    { value: 'claude-opus-4-5-20251101', label: 'Claude Opus 4.5', description: '最强大的 Claude 4.5 模型' },
+    { value: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5', description: '平衡性能与速度的 Claude 4.5 模型' },
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', description: '快速响应的 Claude 4.5 模型' },
+];
+
+/**
+ * 加载配置缓存（硬编码版本）
  */
 async function loadConfig(context: HandlerContext): Promise<any> {
-    const { logService, sdkService, workspaceService } = context;
+    const { logService } = context;
 
-    logService.info("Loading config cache by launching Claude...");
-
-    const inputStream = new AsyncStream<SDKUserMessage>();
-    const cwd = workspaceService.getDefaultWorkspaceFolder()?.uri.fsPath || process.cwd();
-
-    const query = await sdkService.query({
-        inputStream,
-        resume: null,
-        canUseTool: async () => ({
-            behavior: "deny" as const,
-            message: "Config loading only"
-        }),
-        model: "default",
-        cwd,
-        permissionMode: "default"
-    });
-
-    inputStream.done();
+    logService.info("[loadConfig] 返回默认硬编码配置");
 
     const config = {
-        slashCommands: await (query as any).supportedCommands?.() || [],
-        models: await (query as any).supportedModels?.() || [],
-        accountInfo: await (query as any).accountInfo?.() || null
+        slashCommands: DEFAULT_SLASH_COMMANDS,
+        models: DEFAULT_MODELS,
+        accountInfo: null
     };
 
     logService.info(`  - Config: [${JSON.stringify(config)}]`);
-    await query.return?.();
 
     return config;
 }
@@ -990,6 +997,19 @@ import type {
     GetSubscriptionResponse,
     GetUsageRequest,
     GetUsageResponse,
+    // Local Todo
+    GetLocalTodosRequest,
+    GetLocalTodosResponse,
+    AddLocalTodoRequest,
+    AddLocalTodoResponse,
+    UpdateLocalTodoRequest,
+    UpdateLocalTodoResponse,
+    DeleteLocalTodoRequest,
+    DeleteLocalTodoResponse,
+    ClearCompletedTodosRequest,
+    ClearCompletedTodosResponse,
+    ImportClaudeTodosRequest,
+    ImportClaudeTodosResponse,
 } from '../../../shared/messages';
 
 /**
@@ -999,18 +1019,23 @@ export async function handleGetClaudeConfig(
     _request: GetClaudeConfigRequest,
     context: HandlerContext
 ): Promise<GetClaudeConfigResponse> {
-    const { claudeConfigService, logService } = context;
+    const { claudeConfigService, configService, logService } = context;
 
     logService.info('[handleGetClaudeConfig] 获取 Claude 配置');
 
-    const apiKey = await claudeConfigService.getMaskedApiKey();
+    // 返回完整的 API Key（不脱敏），方便用户查看和编辑
+    const apiKey = await claudeConfigService.getApiKey();
     const baseUrl = await claudeConfigService.getBaseUrl();
+    const cliPath = configService.getValue<string>('xiong.claudeCliPath') || null;
+
+    logService.info(`[handleGetClaudeConfig] 读取结果: apiKey=${apiKey ? apiKey.slice(0, 8) + '...' : 'null'}, baseUrl=${baseUrl || 'null'}`);
 
     return {
         type: "get_claude_config_response",
         config: {
             apiKey,
             baseUrl,
+            claudeCliPath: cliPath,
             isConfigured: apiKey !== null
         }
     };
@@ -1029,6 +1054,7 @@ export async function handleSetApiKey(
 
     try {
         await claudeConfigService.setApiKey(request.apiKey);
+
         logService.info('[handleSetApiKey] API Key 已更新');
 
         return {
@@ -1060,6 +1086,7 @@ export async function handleSetBaseUrl(
 
     try {
         await claudeConfigService.setBaseUrl(request.baseUrl);
+
         logService.info('[handleSetBaseUrl] Base URL 已更新');
 
         return {
@@ -1072,6 +1099,36 @@ export async function handleSetBaseUrl(
 
         return {
             type: "set_base_url_response",
+            success: false,
+            error: errorMsg
+        };
+    }
+}
+
+/**
+ * 设置 Claude CLI 路径
+ */
+export async function handleSetClaudeCliPath(
+    request: SetClaudeCliPathRequest,
+    context: HandlerContext
+): Promise<SetClaudeCliPathResponse> {
+    const { configService, logService } = context;
+
+    const cliPath = request.cliPath?.trim() ?? '';
+    logService.info(`[handleSetClaudeCliPath] 设置 Claude CLI 路径: ${cliPath || '(empty)'}`);
+
+    try {
+        await configService.updateValue('xiong.claudeCliPath', cliPath);
+        logService.info('[handleSetClaudeCliPath] Claude CLI 路径已更新');
+        return {
+            type: "set_claude_cli_path_response",
+            success: true
+        };
+    } catch (error) {
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        logService.error(`[handleSetClaudeCliPath] 设置 Claude CLI 路径失败: ${errorMsg}`);
+        return {
+            type: "set_claude_cli_path_response",
             success: false,
             error: errorMsg
         };
@@ -1152,4 +1209,335 @@ export async function handleGetUsage(
             error: errorMsg
         };
     }
+}
+
+/**
+ * 检查环境（Claude Code CLI 和 Git）
+ */
+export async function handleCheckEnvironment(
+    _request: CheckEnvironmentRequest,
+    context: HandlerContext
+): Promise<CheckEnvironmentResponse> {
+    const { logService, configService } = context;
+
+    logService.info('[handleCheckEnvironment] 检查环境');
+
+    const result: CheckEnvironmentResponse = {
+        type: "check_environment_response",
+        claudeCode: { installed: false },
+        git: { installed: false },
+        allReady: false
+    };
+
+    // 检查 Claude Code CLI
+    // 根据操作系统尝试多个可能的路径
+    const isWindows = process.platform === 'win32';
+    const homedir = os.homedir();
+
+    const claudePaths: string[] = isWindows
+        ? [
+            'claude',  // 系统 PATH
+            'claude.exe',
+            'claude.ps1',
+            `${homedir}\\AppData\\Local\\Programs\\claude\\claude.exe`,
+            `${homedir}\\AppData\\Roaming\\npm\\claude.cmd`,
+            `${homedir}\\AppData\\Roaming\\npm\\claude.ps1`,
+            `${homedir}\\.claude\\local\\claude.exe`,
+            'C:\\Program Files\\Claude\\claude.exe',
+            'C:\\Program Files (x86)\\Claude\\claude.exe',
+        ]
+        : [
+            'claude',  // 系统 PATH
+            '/usr/local/bin/claude',
+            '/opt/homebrew/bin/claude',
+            `${homedir}/.local/bin/claude`,
+            `${homedir}/.claude/local/claude`,
+            '/usr/bin/claude',
+        ];
+
+    const addUniquePath = (target: string[], candidate: string | undefined | null) => {
+        if (!candidate) return;
+        if (!target.includes(candidate)) {
+            target.push(candidate);
+        }
+    };
+
+    // 优先使用用户配置的 CLI 路径
+    const configuredCliPath = configService.getValue<string>('xiong.claudeCliPath');
+    if (configuredCliPath && configuredCliPath.trim() !== '') {
+        const trimmedPath = configuredCliPath.trim();
+        if (!claudePaths.includes(trimmedPath)) {
+            claudePaths.unshift(trimmedPath);
+        }
+        logService.info(`[handleCheckEnvironment] 使用自定义 Claude CLI 路径: ${trimmedPath}`);
+    }
+
+    // Windows: 额外考虑 APPDATA/LOCALAPPDATA 的 npm 全局 bin 位置
+    if (isWindows) {
+        const appData = process.env.APPDATA;
+        const localAppData = process.env.LOCALAPPDATA;
+        const programFiles = process.env.ProgramFiles;
+        const programFilesX86 = process.env['ProgramFiles(x86)'];
+
+        addUniquePath(claudePaths, appData ? `${appData}\\npm\\claude.cmd` : null);
+        addUniquePath(claudePaths, appData ? `${appData}\\npm\\claude.exe` : null);
+        addUniquePath(claudePaths, appData ? `${appData}\\npm\\claude.ps1` : null);
+        addUniquePath(claudePaths, localAppData ? `${localAppData}\\npm\\claude.cmd` : null);
+        addUniquePath(claudePaths, localAppData ? `${localAppData}\\npm\\claude.exe` : null);
+        addUniquePath(claudePaths, localAppData ? `${localAppData}\\npm\\claude.ps1` : null);
+        addUniquePath(claudePaths, programFiles ? `${programFiles}\\Claude\\claude.exe` : null);
+        addUniquePath(claudePaths, programFilesX86 ? `${programFilesX86}\\Claude\\claude.exe` : null);
+    }
+
+    try {
+        // Windows: 使用 where 进一步定位 PATH 中的 claude 可执行文件
+        if (isWindows) {
+            const whereResults: string[] = [];
+            const findWithWhere = async (name: string) => {
+                try {
+                    const output = await new Promise<string>((resolve, reject) => {
+                        execFile('where', [name], { timeout: 3000 }, (error, stdout) => {
+                            if (error) {
+                                reject(error);
+                                return;
+                            }
+                            resolve(stdout);
+                        });
+                    });
+                    for (const line of output.split(/\r?\n/)) {
+                        const trimmed = line.trim();
+                        if (trimmed) whereResults.push(trimmed);
+                    }
+                } catch {
+                    // 忽略 where 失败
+                }
+            };
+
+            await findWithWhere('claude');
+            await findWithWhere('claude.cmd');
+            await findWithWhere('claude.exe');
+
+            for (const foundPath of whereResults) {
+                addUniquePath(claudePaths, foundPath);
+            }
+        }
+
+        let claudeFound = false;
+        for (const claudePath of claudePaths) {
+            try {
+                const hasPathSeparator = claudePath.includes('/') || claudePath.includes('\\');
+                const isExplicitPath = path.isAbsolute(claudePath) || hasPathSeparator;
+                const fileExists = isExplicitPath ? fs.existsSync(claudePath) : false;
+
+                if (fileExists) {
+                    logService.info(`[handleCheckEnvironment] Claude Code CLI 文件存在: ${claudePath}`);
+                    result.claudeCode = { installed: true, path: claudePath };
+                    claudeFound = true;
+                }
+
+                const claudeResult = await new Promise<{ installed: boolean; version?: string; path?: string }>((resolve) => {
+                    const isPowerShellScript = isWindows && claudePath.toLowerCase().endsWith('.ps1');
+                    const execCmd = isPowerShellScript ? 'powershell.exe' : claudePath;
+                    const execArgs = isPowerShellScript
+                        ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', claudePath, '--version']
+                        : ['--version'];
+
+                    execFile(execCmd, execArgs, { timeout: 5000 }, (error, stdout, stderr) => {
+                        if (error) {
+                            resolve({ installed: false });
+                        } else {
+                            const version = stdout.trim() || stderr.trim();
+                            logService.info(`[handleCheckEnvironment] Claude Code CLI 版本: ${version} (路径: ${claudePath})`);
+                            resolve({ installed: true, version, path: claudePath });
+                        }
+                    });
+                });
+
+                if (claudeResult.installed) {
+                    result.claudeCode = claudeResult;
+                    claudeFound = true;
+                    break;
+                }
+
+                if (claudeFound) {
+                    break;
+                }
+            } catch {
+                // 继续尝试下一个路径
+            }
+        }
+
+        if (!claudeFound) {
+            logService.warn(`[handleCheckEnvironment] Claude Code CLI 未安装或不可用（已尝试 ${claudePaths.length} 个路径）`);
+        }
+    } catch (error) {
+        logService.error(`[handleCheckEnvironment] 检查 Claude Code CLI 失败: ${error}`);
+    }
+
+    // 检查 Git
+    const gitPaths = isWindows
+        ? ['git', 'git.exe', 'C:\\Program Files\\Git\\bin\\git.exe', 'C:\\Program Files (x86)\\Git\\bin\\git.exe']
+        : ['git'];
+
+    try {
+        let gitFound = false;
+        for (const gitPath of gitPaths) {
+            try {
+                const gitResult = await new Promise<{ installed: boolean; version?: string }>((resolve) => {
+                    execFile(gitPath, ['--version'], { timeout: 5000 }, (error, stdout) => {
+                        if (error) {
+                            resolve({ installed: false });
+                        } else {
+                            const version = stdout.trim();
+                            logService.info(`[handleCheckEnvironment] Git 版本: ${version}`);
+                            resolve({ installed: true, version });
+                        }
+                    });
+                });
+
+                if (gitResult.installed) {
+                    result.git = gitResult;
+                    gitFound = true;
+                    break;
+                }
+            } catch {
+                // 继续尝试下一个路径
+            }
+        }
+
+        if (!gitFound) {
+            logService.warn('[handleCheckEnvironment] Git 未安装或不可用');
+        }
+    } catch (error) {
+        logService.error(`[handleCheckEnvironment] 检查 Git 失败: ${error}`);
+    }
+
+    // 判断是否全部就绪
+    result.allReady = result.claudeCode.installed && result.git.installed;
+
+    logService.info(`[handleCheckEnvironment] 环境检查完成: Claude=${result.claudeCode.installed}, Git=${result.git.installed}`);
+
+    return result;
+}
+
+// ============================================================================
+// 本地 Todo CRUD Handlers
+// ============================================================================
+
+/**
+ * 获取所有本地 Todo
+ */
+export async function handleGetLocalTodos(
+    _request: GetLocalTodosRequest,
+    context: HandlerContext
+): Promise<GetLocalTodosResponse> {
+    const { localTodoService, logService } = context;
+
+    logService.info('[handleGetLocalTodos] 获取本地 Todo 列表');
+
+    const todos = await localTodoService.getAll();
+
+    return {
+        type: "get_local_todos_response",
+        todos
+    };
+}
+
+/**
+ * 添加本地 Todo
+ */
+export async function handleAddLocalTodo(
+    request: AddLocalTodoRequest,
+    context: HandlerContext
+): Promise<AddLocalTodoResponse> {
+    const { localTodoService, logService } = context;
+
+    logService.info(`[handleAddLocalTodo] 添加 Todo: ${request.todo.content}`);
+
+    const todo = await localTodoService.add(request.todo);
+
+    return {
+        type: "add_local_todo_response",
+        todo
+    };
+}
+
+/**
+ * 更新本地 Todo
+ */
+export async function handleUpdateLocalTodo(
+    request: UpdateLocalTodoRequest,
+    context: HandlerContext
+): Promise<UpdateLocalTodoResponse> {
+    const { localTodoService, logService } = context;
+
+    logService.info(`[handleUpdateLocalTodo] 更新 Todo: ${request.id}`);
+
+    const todo = await localTodoService.update(request.id, request.updates);
+
+    if (!todo) {
+        throw new Error(`Todo not found: ${request.id}`);
+    }
+
+    return {
+        type: "update_local_todo_response",
+        todo
+    };
+}
+
+/**
+ * 删除本地 Todo
+ */
+export async function handleDeleteLocalTodo(
+    request: DeleteLocalTodoRequest,
+    context: HandlerContext
+): Promise<DeleteLocalTodoResponse> {
+    const { localTodoService, logService } = context;
+
+    logService.info(`[handleDeleteLocalTodo] 删除 Todo: ${request.id}`);
+
+    const success = await localTodoService.delete(request.id);
+
+    return {
+        type: "delete_local_todo_response",
+        success
+    };
+}
+
+/**
+ * 清除已完成的 Todo
+ */
+export async function handleClearCompletedTodos(
+    _request: ClearCompletedTodosRequest,
+    context: HandlerContext
+): Promise<ClearCompletedTodosResponse> {
+    const { localTodoService, logService } = context;
+
+    logService.info('[handleClearCompletedTodos] 清除已完成的 Todo');
+
+    const deletedCount = await localTodoService.clearCompleted();
+
+    return {
+        type: "clear_completed_todos_response",
+        deletedCount
+    };
+}
+
+/**
+ * 从 Claude TodoWrite 导入
+ */
+export async function handleImportClaudeTodos(
+    request: ImportClaudeTodosRequest,
+    context: HandlerContext
+): Promise<ImportClaudeTodosResponse> {
+    const { localTodoService, logService } = context;
+
+    logService.info(`[handleImportClaudeTodos] 导入 ${request.todos.length} 个 Todo`);
+
+    const todos = await localTodoService.importFromClaude(request.todos, request.sessionId);
+
+    return {
+        type: "import_claude_todos_response",
+        todos
+    };
 }

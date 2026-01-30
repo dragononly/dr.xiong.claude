@@ -3,7 +3,7 @@ import type { BaseTransport, WorkspaceInfo } from '../transport/BaseTransport';
 import type { PermissionRequest } from './PermissionRequest';
 import type { ModelOption } from '../../../shared/messages';
 import type { SessionSummary } from './types';
-import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import type { PermissionMode } from '../../../shared/permissions';
 import { processAndAttachMessage, clearToolUseCache /*, mergeConsecutiveReadMessages */ } from '../utils/messageUtils';
 import { Message as MessageModel } from '../models/Message';
 import type { Message } from '../models/Message';
@@ -87,6 +87,7 @@ export class Session {
 
   readonly busy = signal(false);
   readonly isLoading = signal(false);
+  readonly taskJustCompleted = signal(false);  // 任务刚完成，用于显示完成提示（直到用户发新消息）
   readonly error = signal<string | undefined>(undefined);
   readonly sessionId = signal<string | undefined>(undefined);
   readonly isExplicit = signal(false);
@@ -104,6 +105,14 @@ export class Session {
   readonly isCompacting = signal(false);  // 上下文压缩状态
   readonly isSummarizing = signal(false); // 摘要生成状态
   readonly isExporting = signal(false);   // 导出总结状态
+  readonly disableResume = signal(true);  // 禁用 session resume（默认禁用，避免 InputValidationError）
+
+  // 无尽模式状态
+  readonly endlessMode = signal(false);   // 是否开启无尽模式
+  readonly endlessMaxRounds = signal(10); // 最大执行次数（默认10，最大1000）
+  readonly endlessCurrentRound = signal(0); // 当前执行次数
+  readonly endlessPrompt = signal('检查前后端数据连接是否一致，前端是否有未完善的功能，检查美工是否精致好看'); // 无尽模式提示词
+
   readonly usageData = signal<UsageData>({
     totalTokens: 0,
     totalCost: 0,
@@ -115,9 +124,7 @@ export class Session {
     lastSyncTime: Date.now()
   });
 
-  // Usage 同步定时器
-  private usageSyncTimer?: ReturnType<typeof setInterval>;
-  private readonly USAGE_SYNC_INTERVAL = 30000; // 30 秒同步一次
+  // 已移除自动同步定时器，改为只在启动/结束会话时同步一次
 
   readonly claudeConfig = computed(() => {
     const conn = this.connection();
@@ -132,13 +139,19 @@ export class Session {
   readonly permissionRequests = computed<PermissionRequest[]>(() => {
     const conn = this.connection();
     const channelId = this.claudeChannelId();
+    const hasPromise = !!this.currentConnectionPromise;
+    console.log('[Session] permissionRequests computed - conn:', !!conn, 'channelId:', channelId, 'hasPromise:', hasPromise);
     if (!conn || !channelId) {
+      console.log('[Session] permissionRequests 返回空数组 - 缺少 conn 或 channelId');
       return [];
     }
 
-    return conn
-      .permissionRequests()
-      .filter((request) => request.channelId === channelId);
+    const allRequests = conn.permissionRequests();
+    console.log('[Session] 所有 permissionRequests:', allRequests.length, allRequests.map(r => ({ channelId: r.channelId, toolName: r.toolName })));
+
+    const filtered = allRequests.filter((request) => request.channelId === channelId);
+    console.log('[Session] 过滤后 permissionRequests:', filtered.length);
+    return filtered;
   });
 
   isOffline(): boolean {
@@ -278,10 +291,14 @@ export class Session {
     }
 
     this.error(undefined);
+
+    // 🔧 修复：先建立连接，再设置 channelId
+    // 这样 permissionRequests computed 在访问时 connection 已经存在
+    // 避免因 connection 为 undefined 导致权限弹窗不显示的问题
+    const connection = await this.getConnection();
+
     const channelId = Math.random().toString(36).slice(2);
     this.claudeChannelId(channelId);
-
-    const connection = await this.getConnection();
 
     if (!this.cwd()) {
       this.cwd(connection.config()?.defaultCwd);
@@ -295,17 +312,28 @@ export class Session {
       this.thinkingLevel(connection.config()?.thinkingLevel || 'off');
     }
 
+    // 根据 disableResume 选项决定是否传递 sessionId
+    // 禁用 resume 可以避免重放旧的工具调用导致的 InputValidationError
+    // 任务状态已持久化到 .tasks/current.md，不需要依赖 session resume
+    const resumeId = this.disableResume() ? undefined : (this.sessionId() ?? undefined);
+
+    if (this.disableResume() && this.sessionId()) {
+      console.log('[Session] disableResume=true, 跳过 session resume，启动全新会话');
+    }
+
     const stream = connection.launchClaude(
       channelId,
-      this.sessionId() ?? undefined,
+      resumeId,
       this.cwd() ?? undefined,
       this.modelSelection() ?? undefined,
       this.permissionMode(),
       this.thinkingLevel()
     );
 
-    // 启动 usage 同步定时器
-    this.startUsageSyncTimer();
+    // 只在启动会话时同步一次 usage（不再使用定时器自动同步）
+    this.syncUsageToBackend().catch(err => {
+      console.warn('[Session] Failed to sync usage on launch:', err);
+    });
 
     void this.readMessages(stream);
     return channelId;
@@ -318,12 +346,17 @@ export class Session {
     }
     const connection = await this.getConnection();
     connection.interruptClaude(channelId);
+    // 清除 channelId，这样下次发送消息时会创建新的 channel
+    // 避免向已关闭的 channel 发送消息导致错误
+    this.claudeChannelId(undefined);
+    // 立即解除 busy 状态，确保 UI 响应
+    // 不依赖后端发送的 result 消息，因为消息可能延迟或丢失
+    this.busy(false);
   }
 
   async restartClaude(): Promise<void> {
     await this.interrupt();
-    this.claudeChannelId(undefined);
-    this.busy(false);
+    // interrupt() 已清除 claudeChannelId 和设置 busy(false)
     await this.launchClaude();
   }
 
@@ -452,7 +485,7 @@ export class Session {
   onPermissionRequested(callback: (request: PermissionRequest) => void): () => void {
     const connection = this.connection();
     if (!connection) {
-      return () => {};
+      return () => { };
     }
 
     return connection.permissionRequested.add((request) => {
@@ -464,12 +497,10 @@ export class Session {
   }
 
   dispose(): void {
-    // 停止 usage 同步定时器
-    this.stopUsageSyncTimer();
-
+    // 已移除自动同步定时器，无需停止
     // 同步最终 usage（异步，不阻塞）
-    this.finalizeUsage().catch(err => {
-      console.warn('[Session] Failed to finalize usage on dispose:', err);
+    this.syncUsageToBackend().catch(err => {
+      console.warn('[Session] Failed to sync final usage on dispose:', err);
     });
 
     if (this.effectCleanup) {
@@ -485,9 +516,31 @@ export class Session {
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
 
+      // 检查是否是 API Key 未配置的错误
+      const isApiKeyError = errorMsg.toLowerCase().includes('api key') ||
+        errorMsg.toLowerCase().includes('apikey') ||
+        errorMsg.toLowerCase().includes('未配置');
+
+      if (isApiKeyError) {
+        const friendlyMsg = `⚠️ API Key 未配置
+
+请先在设置中配置您的 API Key：
+
+1. 点击左侧边栏的 ⚙️ 设置按钮
+2. 在 "API Key" 输入框中填入您的 API Key
+3. 点击保存后重新发送消息
+
+如果您还没有 API Key，可以前往 http://ai.moono.vip 申请。`;
+
+        this.error(friendlyMsg);
+        this.busy(false);
+        this.claudeChannelId(undefined);
+        return;
+      }
+
       // 检查是否是 InputValidationError（工具参数验证失败）
       const isValidationError = errorMsg.toLowerCase().includes('inputvalidationerror') ||
-                                errorMsg.toLowerCase().includes('required parameter');
+        errorMsg.toLowerCase().includes('required parameter');
 
       if (isValidationError) {
         // InputValidationError：显示友好的错误消息并提示用户重新开启会话
@@ -532,6 +585,7 @@ ${errorMsg}
 
   private processIncomingMessage(event: any): void {
     // 🔥 使用完整的消息处理流程
+    console.log('[Session] processIncomingMessage 收到事件:', event?.type, event?.subtype, event);
 
     // 1. 获取当前消息数组（转为可变数组）
     const currentMessages = [...this.messages()] as Message[];
@@ -555,14 +609,71 @@ ${errorMsg}
     if (event?.type === 'system') {
       this.sessionId(event.session_id);
       if (event.subtype === 'init') {
-        this.busy(true);
+        // 🔧 修复：init 事件只是表示 channel 准备好了，不应该设置 busy=true
+        // busy=true 应该在 send() 方法中设置，表示用户真正发送了消息
+        // 移除: this.busy(true);
+        // 开始新任务时，清除完成状态
+        this.taskJustCompleted(false);
       } else if (event.subtype === 'status' && event.status === 'compacting') {
         // 上下文压缩中：显示提示并自动发送继续消息
         this.handleCompacting();
       }
     } else if (event?.type === 'result') {
+      console.log('[Session] 收到 result 事件，触发 handleEndlessMode');
       this.busy(false);
+      // 显示任务完成提示（保持显示直到用户发送新消息）
+      this.taskJustCompleted(true);
+
+      // 无尽模式：自动发送下一轮
+      this.handleEndlessMode();
     }
+  }
+
+  /**
+   * 处理无尽模式：任务完成后自动发送下一轮
+   */
+  private handleEndlessMode(): void {
+    console.log('[Session] handleEndlessMode 被调用, endlessMode =', this.endlessMode());
+
+    if (!this.endlessMode()) {
+      console.log('[Session] 无尽模式未开启，跳过');
+      return;
+    }
+
+    const currentRound = this.endlessCurrentRound();
+    const maxRounds = this.endlessMaxRounds();
+    const prompt = this.endlessPrompt();
+
+    console.log(`[Session] 无尽模式状态: currentRound=${currentRound}, maxRounds=${maxRounds}, prompt="${prompt.substring(0, 50)}..."`);
+
+    if (currentRound >= maxRounds) {
+      // 已达到最大次数，关闭无尽模式
+      console.log(`[Session] 无尽模式完成，共执行 ${currentRound} 次`);
+      this.endlessMode(false);
+      this.endlessCurrentRound(0);
+      return;
+    }
+
+    if (!prompt.trim()) {
+      console.warn('[Session] 无尽模式提示词为空，停止执行');
+      this.endlessMode(false);
+      return;
+    }
+
+    // 增加计数
+    this.endlessCurrentRound(currentRound + 1);
+    console.log(`[Session] 无尽模式第 ${currentRound + 1}/${maxRounds} 轮，准备发送`);
+
+    // 延迟 1 秒后自动发送（给用户一点缓冲时间）
+    setTimeout(() => {
+      console.log(`[Session] setTimeout 回调: endlessMode=${this.endlessMode()}, busy=${this.busy()}`);
+      if (this.endlessMode() && !this.busy()) {
+        console.log('[Session] 发送无尽模式消息');
+        this.send(prompt);
+      } else {
+        console.log('[Session] 条件不满足，未发送消息');
+      }
+    }, 1000);
   }
 
   /**
@@ -622,27 +733,13 @@ ${errorMsg}
       lastSyncTime: current.lastSyncTime
     });
 
-    // 检查是否需要同步到后端（每 30 秒）
-    this.checkAndSyncUsage();
-  }
-
-  /**
-   * 检查并同步 usage 到后端
-   * 使用防抖策略，避免频繁请求
-   */
-  private async checkAndSyncUsage(): Promise<void> {
-    const current = this.usageData();
-    const now = Date.now();
-
-    // 如果距离上次同步超过 30 秒，触发同步
-    if (now - current.lastSyncTime >= this.USAGE_SYNC_INTERVAL) {
-      await this.syncUsageToBackend();
-    }
+    // 已移除自动同步逻辑，usage 只在启动/结束会话时同步一次
   }
 
   /**
    * 同步 usage 数据到后端
    * 调用后端 API 刷新总使用量
+   * 注意：只在启动会话时和结束会话时调用，不再自动定时同步
    */
   async syncUsageToBackend(): Promise<void> {
     try {
@@ -667,50 +764,6 @@ ${errorMsg}
       }
     } catch (error) {
       console.warn('[Session] Failed to sync usage:', error);
-    }
-  }
-
-  /**
-   * 启动 usage 同步定时器
-   */
-  private startUsageSyncTimer(): void {
-    if (this.usageSyncTimer) return;
-
-    this.usageSyncTimer = setInterval(() => {
-      const current = this.usageData();
-      // 只有有新的 token 消耗时才同步
-      if (current.sessionInputTokens > 0 || current.sessionOutputTokens > 0) {
-        this.syncUsageToBackend();
-      }
-    }, this.USAGE_SYNC_INTERVAL);
-  }
-
-  /**
-   * 停止 usage 同步定时器
-   */
-  private stopUsageSyncTimer(): void {
-    if (this.usageSyncTimer) {
-      clearInterval(this.usageSyncTimer);
-      this.usageSyncTimer = undefined;
-    }
-  }
-
-  /**
-   * 会话结束时同步 usage（必须调用）
-   */
-  async finalizeUsage(): Promise<void> {
-    this.stopUsageSyncTimer();
-
-    const current = this.usageData();
-    // 只有有消耗时才同步
-    if (current.sessionInputTokens > 0 || current.sessionOutputTokens > 0) {
-      await this.syncUsageToBackend();
-      console.log('[Session] Final usage synced:', {
-        inputTokens: current.sessionInputTokens,
-        outputTokens: current.sessionOutputTokens,
-        cacheRead: current.sessionCacheReadTokens,
-        cacheCreation: current.sessionCacheCreationTokens
-      });
     }
   }
 
@@ -937,6 +990,46 @@ ${errorMsg}
   }
 
   /**
+   * 从消息中提取修改的文件列表
+   * 通过分析 Write 和 Edit 工具调用来获取
+   */
+  private extractModifiedFiles(messages: Message[]): string[] {
+    const files = new Set<string>();
+
+    for (const message of messages) {
+      const content = message.message?.content;
+      if (!Array.isArray(content)) continue;
+
+      for (const block of content) {
+        const blockData = block.content || block.data || block;
+
+        // 检查 tool_use 块
+        if (blockData.type === 'tool_use') {
+          const toolName = blockData.name;
+          const input = blockData.input as Record<string, unknown> | undefined;
+
+          if ((toolName === 'Write' || toolName === 'Edit') && input?.file_path) {
+            // 提取文件路径，去掉工作目录前缀
+            let filePath = String(input.file_path);
+            // 简化路径显示（去掉绝对路径前缀）
+            const lastSlashIndex = filePath.lastIndexOf('/');
+            if (lastSlashIndex > 0) {
+              // 保留最后两级目录
+              const parts = filePath.split('/');
+              if (parts.length > 2) {
+                filePath = parts.slice(-3).join('/');
+              }
+            }
+            files.add(filePath);
+          }
+        }
+      }
+    }
+
+    return Array.from(files);
+  }
+
+  /**
    * 导出当前会话事件总结到 Markdown 文件
    *
    * 提取会话关键内容，调用 AI 生成摘要，然后追加到固定的 Markdown 文件。
@@ -980,13 +1073,17 @@ ${errorMsg}
         throw new Error('No active channel');
       }
 
+      // 2.5 提取修改的文件列表
+      const modifiedFiles = this.extractModifiedFiles(currentMessages);
+
       // 3. 构建摘要请求 prompt
-      const summaryPrompt = `请为以下对话生成一个简洁的摘要。要求：
-1. 用 2-5 个要点概括主要讨论内容
+      const summaryPrompt = `请为以下对话生成一个详细的工作日志摘要。要求：
+1. 用 3-6 个要点概括主要工作内容
 2. 突出用户的核心需求和最终解决方案
-3. 如果涉及代码修改，简要说明修改了哪些文件/功能
-4. 使用中文，保持简洁专业
-5. 直接输出摘要内容，不要有多余的开场白
+3. 列出关键的技术决策和实现方式
+4. 如果有遇到的问题和解决方法，也要记录
+5. 使用中文，保持专业但详细
+6. 直接输出摘要内容，不要有多余的开场白
 
 对话内容：
 ${keyConversation.slice(0, 15000)}`;
@@ -1066,21 +1163,24 @@ ${keyConversation.slice(0, 15000)}`;
       const sessionSummary = this.summary() || '无标题会话';
       const fileName = `.claude-summary.md`;
 
-      // 7. 构建 Markdown 内容
+      // 7. 构建 Markdown 内容（更详细的工作日志）
+      const filesSection = modifiedFiles.length > 0
+        ? `\n### 修改的文件\n\n${modifiedFiles.map(f => `- \`${f}\``).join('\n')}\n`
+        : '';
+
       const newContent = `
 ---
 
-## 会话记录
+## 工作日志 - ${readableTime.split(' ')[0]}
 
 > **会话标题**: ${sessionSummary}
 > **记录时间**: ${readableTime}
-> **会话 ID**: ${sessionId}
 > **消息数量**: ${currentMessages.length}
 
-### AI 生成摘要
+### 工作摘要
 
 ${aiSummary || '（摘要生成失败）'}
-
+${filesSection}
 `;
 
       // 8. 尝试读取现有文件内容

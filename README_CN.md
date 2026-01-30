@@ -11,6 +11,45 @@
 
 VSCode 扩展，将 Claude Code 直接集成到你的编辑器中。
 
+## ⚠️ 重要提示：首次使用必须配置 API Key
+
+**在开始使用之前，您必须配置 API Key，否则聊天功能无法正常工作。**
+
+### 配置步骤：
+
+1. **打开设置页面**
+   - 方式1：在 VSCode 中按 `Ctrl+Shift+P` (Mac: `Cmd+Shift+P`)，输入 `xiong.openSettings` 并回车
+   - 方式2：点击聊天界面右上角的设置图标 ⚙️
+
+2. **配置 API Key**
+   - 在 "API Key" 字段中填入您的 Claude API Key
+   - API Key 格式：`sk-ant-api03-...`
+
+3. **（可选）配置 Base URL**
+   - 如果使用代理服务，在 "Base URL" 字段填入代理地址
+   - 如果使用官方 API，留空即可（默认：https://api.anthropic.com）
+
+4. **保存配置**
+   - 点击 "保存配置" 按钮
+
+5. **开始使用**
+   - 关闭并重新打开聊天窗口
+   - 现在您可以正常使用聊天功能了
+
+### 🔧 配置保存失败？
+
+如果在保存配置时遇到问题，请查看[故障排查指南](docs/TROUBLESHOOTING.md)了解详细解决方案。
+
+**快速检查**：
+- 按 `F12` 打开控制台查看错误日志
+- 运行 `node scripts/test-config.js` 检查配置文件
+- 尝试手动编辑 `~/.claude/settings.json`
+
+### 获取 API Key
+
+- **官方 API**：访问 [Anthropic Console](https://console.anthropic.com/) 获取 API Key
+- **代理服务**：如果您使用第三方代理服务，请从代理服务商获取 API Key 和 Base URL
+
 ## 概述
 
 Claude Code 将 Claude AI 集成到 VSCode，提供具有对话历史、工具集成和智能代码理解的交互式编程助手。

@@ -15,10 +15,11 @@
  * ```
  */
 
-import { computed } from 'vue';
+import { computed, ref } from 'vue';
 import type { ComputedRef, Ref } from 'vue';
 import { useSignal } from '@gn8/alien-signals-vue';
-import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk';
+import { effect } from 'alien-signals';
+import type { PermissionMode } from '../../../shared/permissions';
 import type { Session, SelectionRange } from '../core/Session';
 import type { PermissionRequest } from '../core/PermissionRequest';
 import type { BaseTransport } from '../transport/BaseTransport';
@@ -131,10 +132,37 @@ export function useSession(session: Session): UseSessionReturn {
   const isSummarizing = useSignal(session.isSummarizing);
   const isExporting = useSignal(session.isExporting);
 
-  //  使用 useSignal 包装 alien computed（读-only 使用，不调用 setter）
-  const claudeConfig = useSignal(session.claudeConfig as any);
-  const config = useSignal(session.config as any);
-  const permissionRequests = useSignal(session.permissionRequests) as unknown as ComputedRef<PermissionRequest[]>;
+  //  使用 Vue computed 包装 alien-signals 的 computed（只读）
+  // 🔥 useSignal 只支持 WritableSignal（signal() 创建的），不支持只读的 computed
+  const claudeConfig = computed(() => session.claudeConfig());
+  const config = computed(() => session.config());
+
+  // 🔧 修复：直接监听 BaseTransport.permissionRequests signal
+  // 问题：Session.permissionRequests computed 的依赖追踪有问题
+  // 解决方案：在 effect 中直接读取 connection().permissionRequests()
+  const permissionRequestsRef = ref<PermissionRequest[]>([]);
+  effect(() => {
+    const conn = session.connection();
+    const channelId = session.claudeChannelId();
+    console.log('[useSession] effect 触发 - conn:', !!conn, 'channelId:', channelId);
+
+    if (!conn || !channelId) {
+      permissionRequestsRef.value = [];
+      return;
+    }
+
+    // 直接读取 BaseTransport 的 permissionRequests signal
+    const allRequests = conn.permissionRequests();
+    console.log('[useSession] 所有请求:', allRequests.length);
+
+    const filtered = allRequests.filter(req => req.channelId === channelId);
+    console.log('[useSession] 过滤后请求:', filtered.length);
+
+    permissionRequestsRef.value = [...filtered];
+  });
+
+  // 直接暴露 ref，不包装成 computed
+  const permissionRequests = permissionRequestsRef;
 
   //  派生状态（临时保留 Vue computed）
   const isOffline = computed(() => session.isOffline());

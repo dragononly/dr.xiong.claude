@@ -13,7 +13,7 @@ export interface IConfigurationService {
 
 	/**
 	 * 获取配置值
-	 * @param section 配置路径，支持 "scope.key" 格式（如 "claudix.environmentVariables"）
+	 * @param section 配置路径，支持 "scope.key" 格式（如 "xiong.environmentVariables"）
 	 * @param defaultValue 默认值
 	 */
 	getValue<T>(section: string, defaultValue?: T): T | undefined;
@@ -40,7 +40,7 @@ export class ConfigurationService implements IConfigurationService {
 	}
 
 	getValue<T>(section: string, defaultValue?: T): T | undefined {
-		// 支持 "scope.key" 格式，例如 "claudix.environmentVariables"
+		// 支持 "scope.key" 格式，例如 "xiong.environmentVariables"
 		const parts = section.split('.');
 		if (parts.length > 1) {
 			const scope = parts[0];

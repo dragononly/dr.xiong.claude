@@ -64,8 +64,10 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, useSlots } from 'vue';
+import { ref, computed, useSlots, inject } from 'vue';
 import ToolStatusIndicator from './ToolStatusIndicator.vue';
+import { RuntimeKey } from '@/composables/runtimeContext';
+import { useSignal } from '@/composables/useSignal';
 
 interface Props {
   toolIcon?: string;
@@ -90,6 +92,14 @@ defineEmits<{
 
 const slots = useSlots();
 
+// 获取会话忙碌状态
+const runtime = inject(RuntimeKey);
+const activeSessionRaw = computed(() => runtime?.sessionStore?.activeSession?.());
+const isBusy = computed(() => {
+  const session = activeSessionRaw.value;
+  return session?.busy?.() ?? false;
+});
+
 // 检测是否有展开内容
 const hasExpandableContent = computed(() => {
   return !!slots.expandable || !!props.toolResult?.is_error;
@@ -104,6 +114,11 @@ const isExpanded = computed({
     // 优先使用用户手动切换的状态
     if (userToggled.value) {
       return userToggledState.value;
+    }
+    // 如果会话正忙（流式输出中），且有内容，则保持展开
+    // 这样用户可以在流式输出期间看到工具的执行状态和内容
+    if (isBusy.value && hasExpandableContent.value) {
+      return true;
     }
     // 否则根据 defaultExpanded 或错误状态决定
     return props.defaultExpanded || !!props.toolResult?.is_error;

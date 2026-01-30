@@ -121,6 +121,8 @@ const searchQuery = ref('');
 const showSearch = ref(false);
 const searchInput = ref<HTMLInputElement | null>(null);
 
+// 最多显示的会话数量
+const MAX_DISPLAY_SESSIONS = 4;
 
 // 计算属性：过滤和排序会话列表
 const filteredSessions = computed(() => {
@@ -137,6 +139,11 @@ const filteredSessions = computed(() => {
   }
 
   // 已经通过 sessionsByLastModified 按时间倒序排序，无需再排序
+  // 最多显示 MAX_DISPLAY_SESSIONS 个会话（搜索时不限制）
+  if (!query && sessions.length > MAX_DISPLAY_SESSIONS) {
+    sessions = sessions.slice(0, MAX_DISPLAY_SESSIONS);
+  }
+
   return sessions;
 });
 

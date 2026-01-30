@@ -6,60 +6,116 @@
     data-permission-panel="1"
   >
     <div class="permission-request-content">
-      <div class="permission-request-header">
-        Do you want to proceed with <strong>{{ request.toolName }}</strong>?
-      </div>
+      <!-- 文件操作专用视图 (Write/Edit) -->
+      <template v-if="isFileOperation">
+        <div class="file-operation-header">
+          <span :class="['codicon', fileOperationIcon]"></span>
+          <span class="operation-title">{{ fileOperationTitle }}</span>
+        </div>
 
-      <!-- 工具特定的权限 UI（预留扩展点） -->
-      <!-- <ToolPermissionView
-        v-if="toolPermissionComponent"
-        :toolName="request.toolName"
-        :context="context"
-        :inputs="request.inputs"
-        @modify="handleModifyInputs"
-      /> -->
+        <!-- 文件路径 -->
+        <div v-if="filePath" class="file-path-row">
+          <span class="codicon codicon-file"></span>
+          <span class="file-path">{{ filePath }}</span>
+        </div>
 
-      <!-- 通用 Details 作为兜底 -->
-      <div v-if="hasInputs" class="permission-request-description">
-        <details>
-          <summary>
-            <span>Details</span>
-            <svg
-              class="chevron"
-              width="12"
-              height="12"
-              viewBox="0 0 12 12"
-              fill="none"
-              xmlns="http://www.w3.org/2000/svg"
-            >
-              <path
-                d="M3 4.5L6 7.5L9 4.5"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </summary>
-          <pre class="input-json">{{ displayInputs }}</pre>
-        </details>
-      </div>
+        <!-- Write 工具：显示文件内容预览 -->
+        <div v-if="isWriteTool && fileContent" class="file-preview">
+          <div class="preview-header">
+            <span>文件内容预览</span>
+            <span class="content-stats">{{ contentStats }}</span>
+          </div>
+          <div class="preview-content">
+            <pre>{{ truncatedContent }}</pre>
+          </div>
+        </div>
+
+        <!-- Edit 工具：显示 diff 预览 -->
+        <div v-if="isEditTool && hasEditContent" class="diff-preview">
+          <div class="preview-header">
+            <span>修改预览</span>
+            <span class="diff-stats">
+              <span v-if="diffStats.added > 0" class="stat-add">+{{ diffStats.added }}</span>
+              <span v-if="diffStats.removed > 0" class="stat-remove">-{{ diffStats.removed }}</span>
+            </span>
+          </div>
+          <div class="diff-content">
+            <div v-for="(line, index) in diffLines" :key="index" class="diff-line" :class="getDiffLineClass(line)">
+              <span class="line-prefix">{{ getLinePrefix(line) }}</span>
+              <span class="line-text">{{ getLineContent(line) }}</span>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <!-- 通用工具视图 -->
+      <template v-else>
+        <div class="permission-request-header">
+          是否允许执行 <strong>{{ request.toolName }}</strong>？
+        </div>
+
+        <!-- 通用 Details 作为兜底 -->
+        <div v-if="hasInputs" class="permission-request-description">
+          <details>
+            <summary>
+              <span>详情</span>
+              <svg
+                class="chevron"
+                width="12"
+                height="12"
+                viewBox="0 0 12 12"
+                fill="none"
+                xmlns="http://www.w3.org/2000/svg"
+              >
+                <path
+                  d="M3 4.5L6 7.5L9 4.5"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </summary>
+            <pre class="input-json">{{ displayInputs }}</pre>
+          </details>
+        </div>
+      </template>
     </div>
 
-    <div class="button-container">
-      <button class="button primary" @click="handleApprove">
-        <span class="shortcut-num">1</span> Yes
+    <!-- 文件操作按钮 -->
+    <div v-if="isFileOperation" class="button-container file-operation-buttons">
+      <button class="button primary save-btn" @click="handleApprove">
+        <span class="codicon codicon-check"></span>
+        <span class="shortcut-num">1</span> 保存
       </button>
-      <button v-if="showSecondButton" class="button" @click="handleApproveAndDontAsk">
-        <span class="shortcut-num">2</span> Yes, and don't ask again
-      </button>
-      <button class="button" @click="handleReject">
-        <span class="shortcut-num">{{ showSecondButton ? '3' : '2' }}</span> No
+      <button class="button revert-btn" @click="handleReject">
+        <span class="codicon codicon-discard"></span>
+        <span class="shortcut-num">2</span> 撤回
       </button>
       <input
         ref="inputRef"
         class="reject-message-input"
-        placeholder="Tell Claude what to do instead"
+        placeholder="告诉 Claude 应该怎么做"
+        v-model="rejectMessage"
+        @keydown="handleKeyDown"
+      />
+    </div>
+
+    <!-- 通用按钮 -->
+    <div v-else class="button-container">
+      <button class="button primary" @click="handleApprove">
+        <span class="shortcut-num">1</span> 允许
+      </button>
+      <button v-if="showSecondButton" class="button" @click="handleApproveAndDontAsk">
+        <span class="shortcut-num">2</span> 允许，且不再询问
+      </button>
+      <button class="button" @click="handleReject">
+        <span class="shortcut-num">{{ showSecondButton ? '3' : '2' }}</span> 拒绝
+      </button>
+      <input
+        ref="inputRef"
+        class="reject-message-input"
+        placeholder="告诉 Claude 应该怎么做"
         v-model="rejectMessage"
         @keydown="handleKeyDown"
       />
@@ -84,6 +140,126 @@ const inputRef = ref<HTMLInputElement | null>(null);
 const rejectMessage = ref('');
 const modifiedInputs = ref<any | undefined>(undefined);
 
+// 判断是否为文件操作工具
+const isFileOperation = computed(() => {
+  return props.request.toolName === 'Write' || props.request.toolName === 'Edit';
+});
+
+const isWriteTool = computed(() => props.request.toolName === 'Write');
+const isEditTool = computed(() => props.request.toolName === 'Edit');
+
+// 文件操作图标
+const fileOperationIcon = computed(() => {
+  if (isWriteTool.value) return 'codicon-new-file';
+  if (isEditTool.value) return 'codicon-edit';
+  return 'codicon-file';
+});
+
+// 文件操作标题
+const fileOperationTitle = computed(() => {
+  if (isWriteTool.value) return '确认写入文件';
+  if (isEditTool.value) return '确认编辑文件';
+  return '确认文件操作';
+});
+
+// 获取文件路径
+const filePath = computed(() => {
+  return props.request.inputs?.file_path || '';
+});
+
+// Write 工具：获取文件内容
+const fileContent = computed(() => {
+  return props.request.inputs?.content || '';
+});
+
+// 内容统计
+const contentStats = computed(() => {
+  if (!fileContent.value) return '';
+  const lines = fileContent.value.split('\n').length;
+  const chars = fileContent.value.length;
+  return `${lines} 行, ${chars} 字符`;
+});
+
+// 截断内容（最多显示 20 行）
+const truncatedContent = computed(() => {
+  if (!fileContent.value) return '';
+  const lines = fileContent.value.split('\n');
+  if (lines.length <= 20) return fileContent.value;
+  return lines.slice(0, 20).join('\n') + '\n... (还有 ' + (lines.length - 20) + ' 行)';
+});
+
+// Edit 工具：判断是否有编辑内容
+const hasEditContent = computed(() => {
+  return props.request.inputs?.old_string !== undefined ||
+         props.request.inputs?.new_string !== undefined;
+});
+
+// 生成 diff 行
+const diffLines = computed(() => {
+  if (!hasEditContent.value) return [];
+
+  const oldStr = props.request.inputs?.old_string || '';
+  const newStr = props.request.inputs?.new_string || '';
+
+  const oldLines = oldStr.split('\n');
+  const newLines = newStr.split('\n');
+
+  const lines: string[] = [];
+
+  // 添加删除的行
+  oldLines.forEach(line => {
+    lines.push('-' + line);
+  });
+
+  // 添加新增的行
+  newLines.forEach(line => {
+    lines.push('+' + line);
+  });
+
+  // 限制显示行数
+  if (lines.length > 30) {
+    return [...lines.slice(0, 30), '... (还有 ' + (lines.length - 30) + ' 行)'];
+  }
+
+  return lines;
+});
+
+// Diff 统计
+const diffStats = computed(() => {
+  if (!hasEditContent.value) return { added: 0, removed: 0 };
+
+  const oldStr = props.request.inputs?.old_string || '';
+  const newStr = props.request.inputs?.new_string || '';
+
+  const removed = oldStr.split('\n').length;
+  const added = newStr.split('\n').length;
+
+  return { added, removed };
+});
+
+// 获取 diff 行类名
+function getDiffLineClass(line: string): string {
+  if (line.startsWith('-')) return 'diff-line-delete';
+  if (line.startsWith('+')) return 'diff-line-add';
+  return 'diff-line-context';
+}
+
+// 获取行前缀
+function getLinePrefix(line: string): string {
+  if (line.startsWith('-') || line.startsWith('+')) {
+    return line[0];
+  }
+  return ' ';
+}
+
+// 获取行内容
+function getLineContent(line: string): string {
+  if (line.startsWith('-') || line.startsWith('+')) {
+    return line.substring(1);
+  }
+  return line;
+}
+
 const hasInputs = computed(() => Object.keys(props.request.inputs).length > 0);
 const showSecondButton = computed(
   () => props.request.suggestions && props.request.suggestions.length > 0
@@ -102,7 +278,6 @@ const handleModifyInputs = (newInputs: any) => {
 
 const handleApprove = () => {
   if (modifiedInputs.value) {
-    // 覆盖 inputs 为修改后的值
     (props.request as any).inputs = modifiedInputs.value;
   }
   props.onResolve(props.request, true);
@@ -141,12 +316,14 @@ const handleContainerKeyDown = (e: KeyboardEvent) => {
     handleApprove();
   } else if (e.key === '2') {
     e.preventDefault();
-    if (showSecondButton.value) {
+    if (isFileOperation.value) {
+      handleReject();
+    } else if (showSecondButton.value) {
       handleApproveAndDontAsk();
     } else {
       handleReject();
     }
-  } else if (e.key === '3' && showSecondButton.value) {
+  } else if (e.key === '3' && showSecondButton.value && !isFileOperation.value) {
     e.preventDefault();
     handleReject();
   } else if (e.key === 'Escape') {
@@ -186,6 +363,169 @@ const handleContainerKeyDown = (e: KeyboardEvent) => {
   font-weight: 600;
 }
 
+/* 文件操作样式 */
+.file-operation-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+
+.file-operation-header .codicon {
+  font-size: 16px;
+  color: var(--vscode-textLink-foreground);
+}
+
+.operation-title {
+  color: var(--vscode-foreground);
+}
+
+.file-path-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 4px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 12px;
+}
+
+.file-path-row .codicon {
+  font-size: 14px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.file-path {
+  color: var(--vscode-textLink-foreground);
+  word-break: break-all;
+}
+
+/* 文件预览样式 */
+.file-preview,
+.diff-preview {
+  border: 1px solid var(--vscode-input-border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.preview-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 12px;
+  background: rgba(0, 0, 0, 0.15);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--vscode-foreground);
+}
+
+.content-stats {
+  color: var(--vscode-descriptionForeground);
+  font-weight: normal;
+}
+
+.diff-stats {
+  display: flex;
+  gap: 8px;
+}
+
+.stat-add {
+  color: var(--vscode-gitDecoration-addedResourceForeground);
+  font-weight: 600;
+}
+
+.stat-remove {
+  color: var(--vscode-gitDecoration-deletedResourceForeground);
+  font-weight: 600;
+}
+
+.preview-content {
+  max-height: 200px;
+  overflow: auto;
+  background: var(--vscode-editor-background);
+}
+
+.preview-content pre {
+  margin: 0;
+  padding: 8px 12px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--vscode-editor-foreground);
+}
+
+/* Diff 内容样式 */
+.diff-content {
+  max-height: 200px;
+  overflow: auto;
+  background: var(--vscode-editor-background);
+}
+
+.diff-line {
+  display: flex;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 11px;
+  line-height: 20px;
+}
+
+.line-prefix {
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.line-text {
+  flex: 1;
+  padding: 0 8px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.diff-line-delete {
+  background-color: color-mix(in srgb, var(--vscode-gitDecoration-deletedResourceForeground) 20%, transparent);
+}
+
+.diff-line-delete .line-prefix {
+  color: var(--vscode-gitDecoration-deletedResourceForeground);
+  background-color: color-mix(in srgb, var(--vscode-gitDecoration-deletedResourceForeground) 25%, transparent);
+}
+
+.diff-line-delete .line-text {
+  color: var(--vscode-gitDecoration-deletedResourceForeground);
+}
+
+.diff-line-add {
+  background-color: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground) 20%, transparent);
+}
+
+.diff-line-add .line-prefix {
+  color: var(--vscode-gitDecoration-addedResourceForeground);
+  background-color: color-mix(in srgb, var(--vscode-gitDecoration-addedResourceForeground) 25%, transparent);
+}
+
+.diff-line-add .line-text {
+  color: var(--vscode-gitDecoration-addedResourceForeground);
+}
+
+.diff-line-context {
+  background-color: var(--vscode-editor-background);
+}
+
+.diff-line-context .line-prefix {
+  color: var(--vscode-descriptionForeground);
+}
+
+.diff-line-context .line-text {
+  color: var(--vscode-editor-foreground);
+}
+
+/* 通用样式 */
 .permission-request-description {
   font-size: 13px;
 }
@@ -239,6 +579,39 @@ const handleContainerKeyDown = (e: KeyboardEvent) => {
   flex-direction: column;
   gap: 8px;
   align-items: stretch;
+}
+
+/* 文件操作按钮样式 */
+.file-operation-buttons {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.file-operation-buttons .button {
+  flex: 1;
+  min-width: 100px;
+  justify-content: center;
+}
+
+.file-operation-buttons .reject-message-input {
+  flex-basis: 100%;
+  margin-top: 4px;
+}
+
+.save-btn {
+  gap: 6px;
+}
+
+.save-btn .codicon {
+  font-size: 14px;
+}
+
+.revert-btn {
+  gap: 6px;
+}
+
+.revert-btn .codicon {
+  font-size: 14px;
 }
 
 .button {

@@ -15,6 +15,7 @@
  * - 其他基础服务
  */
 
+import * as vscode from 'vscode';
 import { createDecorator } from '../../di/instantiation';
 import { ILogService } from '../logService';
 import { IConfigurationService } from '../configurationService';
@@ -25,11 +26,14 @@ import { ITerminalService } from '../terminalService';
 import { ISSHService } from '../sshService';
 import { ITabsAndEditorsService } from '../tabsAndEditorsService';
 import { IClaudeSdkService } from './ClaudeSdkService';
+import { IXiongGeminiService } from '../ai/XiongGeminiService';
 import { IClaudeSessionService } from './ClaudeSessionService';
 import { AsyncStream, ITransport } from './transport';
 import { HandlerContext } from './handlers/types';
 import { IWebViewService } from '../webViewService';
 import { IClaudeConfigService } from '../claudeConfigService';
+import { LocalTodoService } from '../LocalTodoService';
+import { AutoTaskService, Task } from '../AutoTaskService';
 
 // 消息类型导入
 import type {
@@ -77,8 +81,17 @@ import {
     handleGetClaudeConfig,
     handleSetApiKey,
     handleSetBaseUrl,
+    handleSetClaudeCliPath,
     handleGetSubscription,
     handleGetUsage,
+    handleCheckEnvironment,
+    // Local Todo handlers
+    handleGetLocalTodos,
+    handleAddLocalTodo,
+    handleUpdateLocalTodo,
+    handleDeleteLocalTodo,
+    handleClearCompletedTodos,
+    handleImportClaudeTodos,
     // handleOpenClaudeInTerminal,
     // handleGetAuthStatus,
     // handleLogin,
@@ -104,6 +117,11 @@ const MODEL_NAME_MAPPING: Record<string, string> = {
     'claude-opus-4-5': 'claude-opus-4-5-20251101',
     'claude-sonnet-4-5': 'claude-sonnet-4-5-20250929',
     'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
+    // XiongGemini 模型 -> Claude 模型（通过 Opus 代理）
+    'xionggemini-opus': 'claude-opus-4-5-20251101',
+    'xionggemini-sonnet': 'claude-sonnet-4-5-20250929',
+    'xionggemini-haiku': 'claude-haiku-4-5-20251001',
+    'xionggemini-pro': 'claude-sonnet-4-5-20250929',
 };
 
 export const IClaudeAgentService = createDecorator<IClaudeAgentService>('claudeAgentService');
@@ -113,11 +131,17 @@ export const IClaudeAgentService = createDecorator<IClaudeAgentService>('claudeA
 // ============================================================================
 
 /**
+ * Provider 类型
+ */
+export type ProviderType = 'claude' | 'xionggemini';
+
+/**
  * Channel 对象：管理单个 Claude 会话
  */
 export interface Channel {
     in: AsyncStream<SDKUserMessage>;  // 输入流：向 SDK 发送用户消息
     query: Query;                     // Query 对象：从 SDK 接收响应
+    provider: ProviderType;           // Provider 类型：用于中断时调用正确的服务
 }
 
 /**
@@ -246,7 +270,35 @@ export class ClaudeAgentService implements IClaudeAgentService {
     // 每个 channel 的权限模式（用于 YOLO 模式判断）
     private channelPermissionModes = new Map<string, string>();
 
+    // 每个 channel 的 session ID（用于错误恢复）
+    private channelSessionIds = new Map<string, string>();
+
+    // 每个 channel 的启动参数（用于错误恢复时重新启动）
+    private channelLaunchParams = new Map<string, {
+        cwd: string;
+        model: string | null;
+        permissionMode: string;
+        thinkingLevel: string | null;
+    }>();
+
+    // InputValidationError 重试计数（防止无限重试）
+    private channelRetryCount = new Map<string, number>();
+    private readonly MAX_RETRY_COUNT = 2;
+
+    // 自动审批配置
+    private autoApproveConfig = {
+        autoApproveEnabled: true,  // 总开关：默认启用
+        confirmWrite: true,   // Write 工具默认需要确认
+        confirmEdit: true     // Edit 工具默认需要确认
+    };
+
+    // 自动任务服务
+    private autoTaskService: AutoTaskService;
+
     constructor(
+        // 静态参数必须放在最前面（由 SyncDescriptor 传入）
+        private readonly localTodoService: LocalTodoService,
+        // 服务注入参数
         @ILogService private readonly logService: ILogService,
         @IConfigurationService private readonly configService: IConfigurationService,
         @IWorkspaceService private readonly workspaceService: IWorkspaceService,
@@ -256,9 +308,10 @@ export class ClaudeAgentService implements IClaudeAgentService {
         @ISSHService private readonly sshService: ISSHService,
         @ITabsAndEditorsService private readonly tabsAndEditorsService: ITabsAndEditorsService,
         @IClaudeSdkService private readonly sdkService: IClaudeSdkService,
+        @IXiongGeminiService private readonly xiongGeminiService: IXiongGeminiService,
         @IClaudeSessionService private readonly sessionService: IClaudeSessionService,
         @IWebViewService private readonly webViewService: IWebViewService,
-        @IClaudeConfigService private readonly claudeConfigService: IClaudeConfigService
+        @IClaudeConfigService private readonly claudeConfigService: IClaudeConfigService,
     ) {
         // 构建 Handler 上下文
         this.handlerContext = {
@@ -275,7 +328,21 @@ export class ClaudeAgentService implements IClaudeAgentService {
             agentService: this,  // 自身引用
             webViewService: this.webViewService,
             claudeConfigService: this.claudeConfigService,
+            localTodoService: this.localTodoService,
         };
+
+        // 初始化自动任务服务
+        this.autoTaskService = new AutoTaskService(this.logService, this);
+
+        // 设置任务发现回调（用于自动执行）
+        this.autoTaskService.onTaskFound((tasks) => {
+            this.handleAutoTaskFound(tasks);
+        });
+
+        // 设置文件变化回调（用于实时 UI 更新）
+        this.autoTaskService.onTaskFileChanged((tasks) => {
+            this.handleTaskFileChanged(tasks);
+        });
     }
 
     /**
@@ -336,11 +403,28 @@ export class ClaudeAgentService implements IClaudeAgentService {
                         break;
 
                     case "io_message":
-                        this.transportMessage(
-                            message.channelId,
-                            message.message,
-                            message.done
-                        );
+                        try {
+                            this.transportMessage(
+                                message.channelId,
+                                message.message,
+                                message.done
+                            );
+                        } catch (error) {
+                            // Channel 不存在时，通知前端关闭 channel
+                            const errorMsg = error instanceof Error ? error.message : String(error);
+                            this.logService.warn(`[ClaudeAgentService] transportMessage failed: ${errorMsg}`);
+                            // 发送错误消息给前端，触发 channel 重建
+                            this.transport?.send({
+                                type: "channel_message",
+                                channelId: message.channelId,
+                                message: {
+                                    type: "result",
+                                    subtype: "error_system",
+                                    error: errorMsg,
+                                    is_error: true
+                                }
+                            });
+                        }
                         break;
 
                     case "request":
@@ -383,7 +467,10 @@ export class ClaudeAgentService implements IClaudeAgentService {
         // 计算 maxThinkingTokens
         const maxThinkingTokens = this.getMaxThinkingTokens(this.thinkingLevel);
 
-        const providerName = 'Claude';
+        // 检测模型类型
+        const isXiongGeminiModel = model ? this.xiongGeminiService.isXiongGeminiModel(model) : false;
+        let providerName = 'Claude';
+        if (isXiongGeminiModel) providerName = 'XiongGemini';
 
         this.logService.info('');
         this.logService.info('╔════════════════════════════════════════╗');
@@ -393,6 +480,7 @@ export class ClaudeAgentService implements IClaudeAgentService {
         this.logService.info(`  Resume: ${resume || 'null'}`);
         this.logService.info(`  CWD: ${cwd}`);
         this.logService.info(`  Model: ${model || 'null'}`);
+        this.logService.info(`  Provider: ${providerName}`);
         this.logService.info(`  Permission: ${permissionMode}`);
         this.logService.info(`  Thinking Level: ${this.thinkingLevel}`);
         this.logService.info(`  Max Thinking Tokens: ${maxThinkingTokens}`);
@@ -413,51 +501,85 @@ export class ClaudeAgentService implements IClaudeAgentService {
             // 记录 channel 的权限模式
             this.channelPermissionModes.set(channelId, permissionMode);
 
-            // 2. 启动 Claude 会话
+            // 保存启动参数（用于错误恢复）
+            this.channelLaunchParams.set(channelId, {
+                cwd,
+                model,
+                permissionMode,
+                thinkingLevel
+            });
+
+            // 2. 启动会话
             this.logService.info('');
             this.logService.info(`📝 步骤 2: 调用 spawn${providerName}()`);
 
-            const query = await this.spawnClaude(
-                inputStream,
-                resume,
-                async (toolName, input, options) => {
-                    // 工具权限回调
-                    this.logService.info(`🔧 工具权限请求: ${toolName}`);
+            // 定义工具权限回调
+            const canUseToolCallback = async (toolName: string, input: any, options: any) => {
+                // 工具权限回调
+                this.logService.info(`🔧 工具权限请求: ${toolName}`);
+                this.logService.info(`   当前自动审批配置: autoApproveEnabled=${this.autoApproveConfig.autoApproveEnabled}, confirmWrite=${this.autoApproveConfig.confirmWrite}, confirmEdit=${this.autoApproveConfig.confirmEdit}`);
 
-                    // 获取当前 channel 的权限模式（可能已被用户切换）
-                    const currentMode = this.channelPermissionModes.get(channelId) || permissionMode;
+                // 检查是否需要针对特定工具进行确认
+                const needsConfirmation = this.shouldConfirmTool(toolName);
+                this.logService.info(`   需要确认: ${needsConfirmation}`);
 
-                    // YOLO 模式：Agent 模式下自动允许所有工具调用
-                    if (currentMode === 'acceptEdits') {
-                        this.logService.info(`  ✓ YOLO 模式：自动允许 ${toolName}`);
-                        return {
-                            behavior: 'allow' as const,
-                            updatedInput: input,
-                            updatedPermissions: options.suggestions || []
-                        };
-                    }
-
-                    // 其他模式：通过 RPC 请求 WebView 确认
+                // 如果需要确认，通过 RPC 请求 WebView 确认
+                if (needsConfirmation) {
+                    this.logService.info(`  [CONFIRM] 需要用户确认: ${toolName}`);
                     return this.requestToolPermission(
                         channelId,
                         toolName,
                         input,
                         options.suggestions || []
                     );
-                },
-                model,
-                cwd,
-                permissionMode,
-                maxThinkingTokens
-            );
-            this.logService.info(`  ✓ spawn${providerName}() 完成，Query 对象已创建`);
+                }
+
+                // 不需要确认，自动允许
+                this.logService.info(`  [AUTO] 自动允许: ${toolName}`);
+                return {
+                    behavior: 'allow' as const,
+                    updatedInput: input,
+                    updatedPermissions: options.suggestions || []
+                };
+            };
+
+            // 根据模型类型选择不同的 spawn 方法
+            let query: Query;
+            if (isXiongGeminiModel) {
+                query = await this.spawnXiongGemini(
+                    inputStream,
+                    resume,
+                    canUseToolCallback,
+                    model,
+                    cwd,
+                    'default',
+                    maxThinkingTokens
+                );
+            } else {
+                query = await this.spawnClaude(
+                    inputStream,
+                    resume,
+                    canUseToolCallback,
+                    model,
+                    cwd,
+                    // 重要：始终使用 'default' 权限模式传递给 SDK
+                    // 这样 SDK 会调用 canUseTool 回调，我们可以在回调中实现自定义权限控制
+                    // 如果传递 'acceptEdits'，SDK 会内部自动允许，不调用 canUseTool
+                    'default',
+                    maxThinkingTokens
+                );
+            }
+            this.logService.info(`  [OK] spawn${providerName}() 完成，Query 对象已创建`);
 
             // 3. 存储到 channels Map
             this.logService.info('');
             this.logService.info('📝 步骤 3: 注册 Channel');
+            let provider: ProviderType = 'claude';
+            if (isXiongGeminiModel) provider = 'xionggemini';
             this.channels.set(channelId, {
                 in: inputStream,
-                query: query
+                query: query,
+                provider: provider
             });
             this.logService.info(`  ✓ Channel 已注册，当前 ${this.channels.size} 个活跃会话`);
 
@@ -472,6 +594,17 @@ export class ClaudeAgentService implements IClaudeAgentService {
                     for await (const message of query) {
                         messageCount++;
                         this.logService.info(`  ← 收到消息 #${messageCount}: ${(message as any).type}`);
+
+                        // 提取并保存 session_id（用于错误恢复）
+                        const msgAny = message as any;
+                        if (msgAny.session_id && msgAny.session_id !== 'unknown') {
+                            this.channelSessionIds.set(channelId, msgAny.session_id);
+                        }
+
+                        // 成功收到消息，重置重试计数
+                        if (messageCount === 1) {
+                            this.channelRetryCount.set(channelId, 0);
+                        }
 
                         this.transport!.send({
                             type: "io_message",
@@ -491,9 +624,78 @@ export class ClaudeAgentService implements IClaudeAgentService {
                         this.logService.error(`     Stack: ${error.stack}`);
                     }
 
-                    // 无论什么错误，都关闭 Channel
-                    // 因为 Query 的异步迭代器已经失效，无法继续使用
-                    this.closeChannel(channelId, true, String(error));
+                    // 检测是否是 InputValidationError（工具参数缺失错误）
+                    const errorStr = String(error);
+                    const isInputValidationError = errorStr.includes('InputValidationError') ||
+                        errorStr.includes('required parameter') ||
+                        errorStr.includes('is missing');
+
+                    if (isInputValidationError) {
+                        // InputValidationError: 模型生成了无效的工具调用
+                        this.logService.warn(`  ⚠️ 检测到 InputValidationError，这是模型生成了无效的工具调用`);
+
+                        // 检查重试次数
+                        const retryCount = this.channelRetryCount.get(channelId) || 0;
+                        const sessionId = this.channelSessionIds.get(channelId);
+                        const launchParams = this.channelLaunchParams.get(channelId);
+
+                        if (retryCount < this.MAX_RETRY_COUNT && sessionId && launchParams) {
+                            // 可以重试：自动恢复会话
+                            this.logService.warn(`  ⚠️ 尝试自动恢复 (${retryCount + 1}/${this.MAX_RETRY_COUNT})...`);
+                            this.channelRetryCount.set(channelId, retryCount + 1);
+
+                            // 发送提示消息给用户
+                            this.transport!.send({
+                                type: "io_message",
+                                channelId,
+                                message: {
+                                    type: "system",
+                                    subtype: "auto_retry",
+                                    message: `检测到工具调用错误，正在自动恢复... (${retryCount + 1}/${this.MAX_RETRY_COUNT})`
+                                } as any,
+                                done: false
+                            });
+
+                            // 清理当前 channel（不发送关闭通知）
+                            const channel = this.channels.get(channelId);
+                            if (channel) {
+                                channel.in.done();
+                                try { channel.query.return?.(); } catch { }
+                                this.channels.delete(channelId);
+                            }
+
+                            // 延迟一点再重新启动，避免竞态条件
+                            setTimeout(async () => {
+                                try {
+                                    await this.launchClaude(
+                                        channelId,
+                                        sessionId,  // resume 当前 session
+                                        launchParams.cwd,
+                                        launchParams.model,
+                                        launchParams.permissionMode,
+                                        launchParams.thinkingLevel
+                                    );
+                                    this.logService.info(`  ✓ 自动恢复成功`);
+                                } catch (retryError) {
+                                    this.logService.error(`  ❌ 自动恢复失败: ${retryError}`);
+                                    this.closeChannel(channelId, true, `自动恢复失败: ${retryError}`);
+                                }
+                            }, 500);
+                        } else {
+                            // 超过重试次数或缺少必要信息，显示友好错误
+                            this.logService.warn(`  ⚠️ 无法自动恢复（重试次数: ${retryCount}, sessionId: ${sessionId ? '有' : '无'}）`);
+
+                            const friendlyError = `模型生成了无效的工具调用（缺少必需参数）。\n\n` +
+                                `已尝试自动恢复 ${retryCount} 次但未成功。\n\n` +
+                                `建议：开始新对话，或更清晰地描述你的需求。\n\n` +
+                                `原始错误: ${errorStr}`;
+
+                            this.closeChannel(channelId, true, friendlyError);
+                        }
+                    } else {
+                        // 其他错误，正常关闭
+                        this.closeChannel(channelId, true, errorStr);
+                    }
                 }
             })();
 
@@ -528,7 +730,16 @@ export class ClaudeAgentService implements IClaudeAgentService {
         }
 
         try {
-            await this.sdkService.interrupt(channel.query as Query);
+            // 根据 provider 类型调用正确的 interrupt 方法
+            switch (channel.provider) {
+                case 'xionggemini':
+                    this.logService.info(`[ClaudeAgentService] 🛑 中断 XiongGemini 查询`);
+                    await this.xiongGeminiService.interrupt(channel.query as Query);
+                    break;
+                default:
+                    this.logService.info(`[ClaudeAgentService] 🛑 中断 Claude SDK 查询`);
+                    await this.sdkService.interrupt(channel.query as Query);
+            }
             this.logService.info(`[ClaudeAgentService] 已中断 Channel: ${channelId}`);
         } catch (error) {
             this.logService.error(`[ClaudeAgentService] 中断失败:`, error);
@@ -565,6 +776,11 @@ export class ClaudeAgentService implements IClaudeAgentService {
         // 3. 清理权限模式记录
         this.channelPermissionModes.delete(channelId);
 
+        // 4. 清理错误恢复相关记录
+        this.channelSessionIds.delete(channelId);
+        this.channelLaunchParams.delete(channelId);
+        this.channelRetryCount.delete(channelId);
+
         this.logService.info(`  ✓ Channel 已关闭，剩余 ${this.channels.size} 个活跃会话`);
     }
 
@@ -590,6 +806,29 @@ export class ClaudeAgentService implements IClaudeAgentService {
         maxThinkingTokens: number
     ): Promise<Query> {
         return this.sdkService.query({
+            inputStream,
+            resume,
+            canUseTool,
+            model,
+            cwd,
+            permissionMode,
+            maxThinkingTokens
+        });
+    }
+
+    /**
+     * 启动 XiongGemini 查询（通过 Opus 代理）
+     */
+    protected async spawnXiongGemini(
+        inputStream: AsyncStream<SDKUserMessage>,
+        resume: string | null,
+        canUseTool: CanUseTool,
+        model: string | null,
+        cwd: string,
+        permissionMode: string,
+        maxThinkingTokens: number
+    ): Promise<Query> {
+        return this.xiongGeminiService.query({
             inputStream,
             resume,
             canUseTool,
@@ -780,15 +1019,15 @@ export class ClaudeAgentService implements IClaudeAgentService {
             case "get_session_request":
                 return handleGetSession(request, this.handlerContext);
 
-        // 文件操作
-        case "list_files_request":
-            return handleListFiles(request, this.handlerContext);
+            // 文件操作
+            case "list_files_request":
+                return handleListFiles(request, this.handlerContext);
 
-        case "stat_path_request":
-            return handleStatPath(request as any, this.handlerContext);
+            case "stat_path_request":
+                return handleStatPath(request as any, this.handlerContext);
 
-        case "write_file":
-            return handleWriteFile(request as any, this.handlerContext);
+            case "write_file":
+                return handleWriteFile(request as any, this.handlerContext);
 
             // 进程操作
             case "exec":
@@ -820,11 +1059,64 @@ export class ClaudeAgentService implements IClaudeAgentService {
             case "set_base_url":
                 return handleSetBaseUrl(request as any, this.handlerContext);
 
+            case "set_claude_cli_path":
+                return handleSetClaudeCliPath(request as any, this.handlerContext);
+
             case "get_subscription":
                 return handleGetSubscription(request as any, this.handlerContext);
 
             case "get_usage":
                 return handleGetUsage(request as any, this.handlerContext);
+
+            case "check_environment":
+                return handleCheckEnvironment(request as any, this.handlerContext);
+
+            case "set_auto_approve_config": {
+                const configReq = request as any;
+                this.setAutoApproveConfig(configReq.config);
+                return {
+                    type: "set_auto_approve_config_response",
+                    success: true
+                };
+            }
+
+            // 本地 Todo CRUD
+            case "get_local_todos":
+                return handleGetLocalTodos(request as any, this.handlerContext);
+
+            case "add_local_todo":
+                return handleAddLocalTodo(request as any, this.handlerContext);
+
+            case "update_local_todo":
+                return handleUpdateLocalTodo(request as any, this.handlerContext);
+
+            case "delete_local_todo":
+                return handleDeleteLocalTodo(request as any, this.handlerContext);
+
+            case "clear_completed_todos":
+                return handleClearCompletedTodos(request as any, this.handlerContext);
+
+            case "import_claude_todos":
+                return handleImportClaudeTodos(request as any, this.handlerContext);
+
+            case "read_task_file":
+                return this.handleReadTaskFile();
+
+            // 自动任务
+            case "enable_auto_task":
+                return this.handleEnableAutoTask(request as any);
+
+            case "disable_auto_task":
+                return this.handleDisableAutoTask();
+
+            case "get_auto_task_config":
+                return this.handleGetAutoTaskConfig();
+
+            case "set_auto_task_interval":
+                return this.handleSetAutoTaskInterval(request as any);
+
+            case "check_tasks_now":
+                return this.handleCheckTasksNow();
 
             // case "open_claude_in_terminal":
             //     return handleOpenClaudeInTerminal(request, this.handlerContext);
@@ -842,6 +1134,150 @@ export class ClaudeAgentService implements IClaudeAgentService {
             default:
                 throw new Error(`Unknown request type: ${request.type}`);
         }
+    }
+
+    /**
+     * 读取任务文件 (.tasks/current.md)
+     */
+    private async handleReadTaskFile(): Promise<any> {
+        try {
+            const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+            if (!workspaceFolder) {
+                return {
+                    type: "read_task_file_response",
+                    success: false,
+                    error: "没有打开的工作区"
+                };
+            }
+
+            const taskFilePath = vscode.Uri.joinPath(workspaceFolder.uri, '.tasks', 'current.md');
+
+            try {
+                const content = await vscode.workspace.fs.readFile(taskFilePath);
+                return {
+                    type: "read_task_file_response",
+                    success: true,
+                    content: Buffer.from(content).toString('utf-8')
+                };
+            } catch {
+                // 文件不存在
+                return {
+                    type: "read_task_file_response",
+                    success: false,
+                    error: "任务文件不存在"
+                };
+            }
+        } catch (error) {
+            return {
+                type: "read_task_file_response",
+                success: false,
+                error: String(error)
+            };
+        }
+    }
+
+    /**
+     * 启用自动任务
+     */
+    private handleEnableAutoTask(request: { interval?: number }): any {
+        this.autoTaskService.enable(request.interval);
+        return {
+            type: "enable_auto_task_response",
+            success: true,
+            config: this.autoTaskService.getConfig()
+        };
+    }
+
+    /**
+     * 禁用自动任务
+     */
+    private handleDisableAutoTask(): any {
+        this.autoTaskService.disable();
+        return {
+            type: "disable_auto_task_response",
+            success: true
+        };
+    }
+
+    /**
+     * 获取自动任务配置
+     */
+    private handleGetAutoTaskConfig(): any {
+        return {
+            type: "get_auto_task_config_response",
+            config: this.autoTaskService.getConfig()
+        };
+    }
+
+    /**
+     * 设置自动任务检查间隔
+     */
+    private handleSetAutoTaskInterval(request: { interval: number }): any {
+        this.autoTaskService.setCheckInterval(request.interval);
+        return {
+            type: "set_auto_task_interval_response",
+            success: true,
+            config: this.autoTaskService.getConfig()
+        };
+    }
+
+    /**
+     * 手动触发任务检查
+     */
+    private async handleCheckTasksNow(): Promise<any> {
+        const tasks = await this.autoTaskService.checkNow();
+        return {
+            type: "check_tasks_now_response",
+            tasks
+        };
+    }
+
+    /**
+     * 处理自动任务发现
+     */
+    private handleAutoTaskFound(tasks: Task[]): void {
+        if (!this.transport) {
+            this.logService.warn('[ClaudeAgentService] Transport 未连接，无法发送自动任务通知');
+            return;
+        }
+
+        const prompt = this.autoTaskService.generateTaskPrompt(tasks);
+
+        // 发送通知到 WebView
+        this.transport.send({
+            type: "request",
+            channelId: "auto-task",
+            requestId: this.generateId(),
+            request: {
+                type: "auto_task_found",
+                tasks,
+                prompt
+            }
+        });
+
+        this.logService.info(`[ClaudeAgentService] 发送自动任务通知，${tasks.length} 个任务`);
+    }
+
+    /**
+     * 处理任务文件变化（用于实时 UI 更新）
+     */
+    private handleTaskFileChanged(tasks: Task[]): void {
+        if (!this.transport) {
+            return;
+        }
+
+        // 发送文件变化通知到 WebView
+        this.transport.send({
+            type: "request",
+            channelId: "task-file",
+            requestId: this.generateId(),
+            request: {
+                type: "task_file_changed",
+                tasks
+            }
+        });
+
+        this.logService.info(`[ClaudeAgentService] 发送任务文件变化通知，${tasks.length} 个任务`);
     }
 
     /**
@@ -908,6 +1344,7 @@ export class ClaudeAgentService implements IClaudeAgentService {
         inputs: Record<string, unknown>,
         suggestions: PermissionUpdate[]
     ): Promise<PermissionResult> {
+        this.logService.info(`[requestToolPermission] 🚀 发送权限请求到 WebView: channelId=${channelId}, toolName=${toolName}`);
         const request: ToolPermissionRequest = {
             type: "tool_permission_request",
             toolName,
@@ -920,6 +1357,7 @@ export class ClaudeAgentService implements IClaudeAgentService {
             request
         );
 
+        this.logService.info(`[requestToolPermission] ✅ 收到权限响应: ${JSON.stringify(response.result)}`);
         return response.result;
     }
 
@@ -1009,8 +1447,12 @@ export class ClaudeAgentService implements IClaudeAgentService {
         // 更新本地权限模式记录（用于 YOLO 模式判断）
         this.channelPermissionModes.set(channelId, mode);
 
-        await channel.query.setPermissionMode(mode);
-        this.logService.info(`[setPermissionMode] Set channel ${channelId} to mode: ${mode}`);
+        // 重要：始终向 SDK 传递 'default' 模式
+        // 这样 SDK 会持续调用 canUseTool 回调，我们在回调中根据本地记录的模式进行判断
+        // 如果传递 'acceptEdits'，SDK 会内部自动允许编辑操作，不调用 canUseTool
+        // 我们需要 canUseTool 被调用，以便实现自定义的确认逻辑（如 Write/Edit 确认）
+        await channel.query.setPermissionMode('default');
+        this.logService.info(`[setPermissionMode] Set channel ${channelId} to mode: ${mode} (SDK always uses 'default' for canUseTool callback)`);
     }
 
     /**
@@ -1031,13 +1473,81 @@ export class ClaudeAgentService implements IClaudeAgentService {
             this.logService.info(`[setModel] 模型名称映射: ${model} -> ${mappedModel}`);
         }
 
-        // 设置模型到 channel
-        this.logService.info(`[setModel] 调用 channel.query.setModel(${mappedModel})`);
-        await channel.query.setModel(mappedModel);
+        // 检测目标模型的 provider 类型
+        const isTargetXiongGemini = this.xiongGeminiService.isXiongGeminiModel(model);
+        const targetProvider: ProviderType = isTargetXiongGemini ? 'xionggemini' : 'claude';
+
+        // 检查是否需要切换 provider
+        const needsProviderSwitch = channel.provider !== targetProvider;
+
+        if (needsProviderSwitch) {
+            // 需要切换 provider，关闭当前 channel
+            this.logService.info(`[setModel] 需要切换 provider: ${channel.provider} -> ${targetProvider}，关闭当前 channel`);
+            this.closeChannel(channelId, true);
+            // 保存配置，前端会重新创建 channel
+            await this.configService.updateValue('xiong.selectedModel', model);
+            this.logService.info(`[setModel] 配置已保存，等待前端重新创建会话`);
+            return;
+        }
+
+        // 根据 provider 类型处理模型切换
+        if (channel.provider === 'claude') {
+            // Claude SDK 支持动态切换模型
+            this.logService.info(`[setModel] 调用 channel.query.setModel(${mappedModel})`);
+            await channel.query.setModel(mappedModel);
+        } else {
+            // 同一 provider 内切换模型，但 XiongGemini 不支持动态切换
+            // 关闭当前 channel，让前端重新创建
+            this.logService.info(`[setModel] ${channel.provider} 不支持动态切换模型，关闭当前 channel`);
+            this.closeChannel(channelId, true);
+        }
 
         // 保存到配置（保存原始模型 ID，以便 UI 显示）
-        await this.configService.updateValue('claudix.selectedModel', model);
+        await this.configService.updateValue('xiong.selectedModel', model);
 
         this.logService.info(`[setModel] 模型切换完成: channel=${channelId}, model=${model}`);
+    }
+
+    /**
+     * 设置自动审批配置
+     */
+    setAutoApproveConfig(config: { autoApproveEnabled?: boolean; confirmWrite?: boolean; confirmEdit?: boolean }): void {
+        if (typeof config.autoApproveEnabled === 'boolean') {
+            this.autoApproveConfig.autoApproveEnabled = config.autoApproveEnabled;
+        }
+        if (typeof config.confirmWrite === 'boolean') {
+            this.autoApproveConfig.confirmWrite = config.confirmWrite;
+        }
+        if (typeof config.confirmEdit === 'boolean') {
+            this.autoApproveConfig.confirmEdit = config.confirmEdit;
+        }
+        this.logService.info(`[setAutoApproveConfig] 更新配置: autoApproveEnabled=${this.autoApproveConfig.autoApproveEnabled}, confirmWrite=${this.autoApproveConfig.confirmWrite}, confirmEdit=${this.autoApproveConfig.confirmEdit}`);
+    }
+
+    /**
+     * 判断工具是否需要用户确认
+     *
+     * @param toolName 工具名称
+     * @returns 是否需要确认
+     */
+    private shouldConfirmTool(toolName: string): boolean {
+        // 如果总开关关闭，所有工具都需要确认
+        if (!this.autoApproveConfig.autoApproveEnabled) {
+            this.logService.info(`[shouldConfirmTool] 总开关关闭，${toolName} 需要确认`);
+            return true;
+        }
+
+        // Write 工具
+        if (toolName === 'Write' && this.autoApproveConfig.confirmWrite) {
+            return true;
+        }
+
+        // Edit 工具
+        if (toolName === 'Edit' && this.autoApproveConfig.confirmEdit) {
+            return true;
+        }
+
+        // 其他工具默认不需要确认
+        return false;
     }
 }

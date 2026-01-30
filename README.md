@@ -1,114 +1,35 @@
 # Dr-XIONG Claude
 
-![VS Code Extension](https://img.shields.io/badge/VS%20Code-Extension-blue?logo=visual-studio-code)
-![Built with TypeScript](https://img.shields.io/badge/Built%20with-TypeScript-blue?logo=typescript)
-![License](https://img.shields.io/badge/License-AGPL--3.0-blue)
+Dr-XIONG Claude for VSCode. Bring the power of Claude AI assistant directly into your coding environment.
 
-[![Mentioned in Awesome Claude Code](assets/mentioned-badge.png)](https://github.com/hesreallyhim/awesome-claude-code)
-![Powered by Claude Agent SDK](https://img.shields.io/badge/Powered%20by-Claude%20Agent%20SDK-orange)
+## Features
 
-VSCode 扩展，将 Claude AI 直接集成到你的编辑器中。
+- Integrated Claude AI assistant in VSCode
+- Support for multiple Claude models (Opus, Sonnet, Haiku)
+- Code generation, explanation, and refactoring
+- File operations with intelligent path handling
+- Session management and conversation history
+- Auto-recovery from tool call errors
 
-## 概述
+## Installation
 
-Dr-XIONG Claude 将 Claude AI 集成到 VSCode，提供具有对话历史、工具集成和智能代码理解的交互式编程助手。
+1. Download the `.vsix` file
+2. Open VSCode
+3. Press `Ctrl+Shift+P` (or `Cmd+Shift+P` on Mac)
+4. Type "Install from VSIX" and select the downloaded file
 
-## 功能特性
+## Usage
 
-- 与 Claude Code 的交互式聊天界面
-- 会话管理和对话历史
-- 智能文件操作和代码分析
-- 终端命令执行
-- 基于权限的工具访问
-- 支持多种 Claude 模型
-- 实时流式响应
-- 语法高亮和 Markdown 渲染
+1. Click the Dr-XIONG Claude icon in the sidebar
+2. Enter your Anthropic API key in settings
+3. Start chatting with Claude!
 
-## 安装
+## Requirements
 
-```bash
-# 安装依赖
-pnpm install
+- VSCode 1.98.0 or higher
+- Node.js 18.0.0 or higher
+- Anthropic API key
 
-# 构建扩展
-pnpm build
-
-# 打包为 VSIX
-pnpm package
-```
-
-在 VSCode 中通过"扩展">"从 VSIX 安装"来安装生成的 `.vsix` 文件。
-
-## 开发调试
-
-### 启动开发模式
-
-启动带有热模块替换的开发服务器：
-
-```bash
-pnpm dev
-```
-
-这将同时启动：
-- Vite 开发服务器（端口 5173）用于 webview
-- esbuild 监听器用于扩展
-
-### 调试扩展
-
-在 VSCode 中打开项目，使用以下调试配置：
-
-#### Run Extension（运行扩展）
-完整构建模式，不带热重载。启动前会从头构建扩展。
-
-- 按 `F5` 或从调试面板选择"Run Extension"
-- 适合类生产环境测试
-
-#### Run Extension (HMR)（热重载模式）
-开发模式，webview 支持热模块替换。
-
-- 从调试面板选择"Run Extension (HMR)"
-- webview 的更改会自动重新加载，无需重启扩展
-- 开发时迭代更快
-
-### 构建命令
-
-```bash
-# 构建所有内容
-pnpm build
-
-# 仅构建扩展
-pnpm build:extension
-
-# 仅构建 webview
-pnpm build:webview
-
-# 运行测试
-pnpm test
-
-# 类型检查
-pnpm typecheck:all
-```
-
-## 使用方法
-
-1. 从活动栏打开 Dr-XIONG Claude 侧边栏
-2. 开始新对话或从历史记录继续
-3. 提问、请求代码更改或获取项目帮助
-4. 在提示时审查并批准工具操作
-
-## 系统要求
-
-- VSCode >= 1.98.0
-- Node.js >= 18.0.0
-
-## 贡献指南
-
-欢迎贡献！如果你想为这个项目做出贡献，请先打开一个 issue 来讨论你的想法或建议的更改。
-
-## 许可证
+## License
 
 AGPL-3.0
-
-## Star History
-
-[![Star History](https://api.star-history.com/svg?repos=Haleclipse/Claudix&type=date&legend=top-left)](https://www.star-history.com/#Haleclipse/Claudix&type=date&legend=top-left)

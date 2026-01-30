@@ -140,8 +140,8 @@ const searchTerm = ref('')
 const dropdownStyle = computed(() => {
   const style: any = {
     position: 'absolute',
-    minWidth: '140px',
-    maxWidth: '240px',
+    minWidth: '180px',
+    maxWidth: '320px',
     width: props.width ? `${props.width}px` : 'auto',
     zIndex: 2548
   }
@@ -363,20 +363,41 @@ defineExpose({
 .dropdown-trigger-popover {
   box-sizing: border-box;
   padding: 0;
-  border-radius: 6px;
-  background-color: var(--vscode-dropdown-background);
-  border: 1px solid var(--vscode-commandCenter-inactiveBorder, var(--vscode-widget-border));
+  border-radius: 12px;
+  /* 毛玻璃效果 */
+  background: color-mix(in srgb, var(--vscode-dropdown-background) 85%, transparent);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  /* 渐变边框 */
+  border: 1px solid color-mix(in srgb, var(--vscode-foreground) 12%, transparent);
   align-items: stretch;
   font-size: 12px;
   display: flex;
   flex-direction: column;
   gap: 2px;
-  box-shadow: 0 0 8px 2px color-mix(in srgb, var(--vscode-widget-shadow) 30%, transparent);
+  /* 柔和阴影 */
+  box-shadow: 
+    0 8px 32px color-mix(in srgb, var(--vscode-widget-shadow) 40%, transparent),
+    0 2px 8px color-mix(in srgb, var(--vscode-widget-shadow) 20%, transparent),
+    inset 0 1px 0 color-mix(in srgb, white 5%, transparent);
   contain: paint;
   outline: none;
   min-width: 140px;
-  max-width: 240px;
+  max-width: 260px;
   width: auto;
+  /* 弹出动画 */
+  animation: dropdownSlideIn 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@keyframes dropdownSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
 }
 
 .dropdown-trigger-container-inner {
