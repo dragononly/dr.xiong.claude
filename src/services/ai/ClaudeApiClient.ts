@@ -249,6 +249,8 @@ export class ClaudeApiClient implements IClaudeApiClient {
         const { baseUrl, apiKey, defaultModel, defaultMaxTokens, timeout, maxRetries } = this.config;
 
         const body = this.buildRequestBody(request, defaultModel!, defaultMaxTokens!);
+        // 必须显式设置 stream: false，否则某些 API 可能默认返回流式响应
+        // 导致 response.json() 无法正确解析，造成聊天框空白
         body.stream = false;
 
         // 调试日志：显示请求的详细信息
