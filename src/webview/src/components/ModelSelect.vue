@@ -52,12 +52,12 @@
       />
       <DropdownItem
         :item="{
-          id: 'claude-opus-4-6',
+          id: 'claude-opus-4.6',
           label: 'Opus 4.6',
-          checked: selectedModel === 'claude-opus-4-6',
+          checked: selectedModel === 'claude-opus-4.6',
           type: 'model'
         }"
-        :is-selected="selectedModel === 'claude-opus-4-6'"
+        :is-selected="selectedModel === 'claude-opus-4.6'"
         :index="3"
         @click="(item) => handleModelSelect(item, close)"
       />
@@ -89,7 +89,7 @@ const MODEL_LABELS: Record<string, string> = {
   'claude-opus-4-5': 'Opus 4.5',
   'claude-sonnet-4-5': 'Sonnet 4.5',
   'claude-haiku-4-5': 'Haiku 4.5',
-  'claude-opus-4-6': 'Opus 4.6',
+  'claude-opus-4.6': 'Opus 4.6',
 }
 
 // 计算显示的模型名称
