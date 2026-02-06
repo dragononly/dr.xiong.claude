@@ -8,6 +8,7 @@ import * as path from 'path';
 import { execFile } from 'child_process';
 import Fuse from 'fuse.js';
 import { createDecorator } from '../di/instantiation';
+import { ILogService } from './logService';
 
 export const IFileSystemService = createDecorator<IFileSystemService>('fileSystemService');
 
@@ -154,6 +155,10 @@ export class FileSystemService implements IFileSystemService {
 
 	// Ripgrep 命令缓存
 	private ripgrepCommandCache: { command: string; args: string[] } | null = null;
+
+	constructor(
+		@ILogService private readonly logService: ILogService
+	) { }
 
 	// ===== 基础文件操作 =====
 
@@ -315,7 +320,7 @@ export class FileSystemService implements IFileSystemService {
 
 		} catch (error) {
 			// Ripgrep 失败,降级到 VSCode API
-			console.warn('[FileSystemService] Ripgrep failed in getTopLevelContents, falling back to readDirectory:', error);
+			this.logService.warn('[FileSystemService] Ripgrep failed in getTopLevelContents, falling back to readDirectory:', error);
 
 			try {
 				const workspaceUri = vscode.Uri.file(cwd);
@@ -336,7 +341,7 @@ export class FileSystemService implements IFileSystemService {
 					return a.name.localeCompare(b.name);
 				});
 			} catch (fallbackError) {
-				console.error('[FileSystemService] getTopLevelContents fallback also failed:', fallbackError);
+				this.logService.error('[FileSystemService] getTopLevelContents fallback also failed:', fallbackError);
 				return [];
 			}
 		}
@@ -633,12 +638,12 @@ export class FileSystemService implements IFileSystemService {
 			return await this.searchFiles(pattern, cwd);
 		} catch (error) {
 			// Ripgrep 失败,降级到 VSCode API
-			console.warn(`[FileSystemService] Ripgrep search failed, falling back to VSCode API:`, error);
+			this.logService.warn('[FileSystemService] Ripgrep search failed, falling back to VSCode API:', error);
 
 			try {
 				return await this.searchFilesWithWorkspace(pattern, cwd);
 			} catch (fallbackError) {
-				console.error(`[FileSystemService] Fallback search also failed:`, fallbackError);
+				this.logService.error('[FileSystemService] Fallback search also failed:', fallbackError);
 				return [];
 			}
 		}

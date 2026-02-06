@@ -151,7 +151,7 @@ import { RuntimeKey } from '../composables/runtimeContext';
 const runtime = inject(RuntimeKey);
 
 // 默认 Base URL
-const DEFAULT_BASE_URL = 'http://aiapi3.moono.vip:3010';
+const DEFAULT_BASE_URL = 'https://aiapi3.moono.vip';
 
 // API Key
 const apiKeyInput = ref('');

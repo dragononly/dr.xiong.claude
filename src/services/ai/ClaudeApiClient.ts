@@ -220,11 +220,16 @@ export class ClaudeApiClient implements IClaudeApiClient {
     ) { }
 
     configure(config: ClaudeApiConfig): void {
+        // 从用户配置读取超时时间（秒），默认 60 秒
+        const userTimeout = this.configService.getValue<number>('xiong.requestTimeout', 60) ?? 60;
+        const timeoutMs = userTimeout * 1000; // 转换为毫秒
+
         this.config = {
             ...DEFAULT_CONFIG,
             ...config,
+            timeout: config.timeout ?? timeoutMs, // 优先使用传入的 timeout，否则使用用户配置
         };
-        this.logService.info(`[ClaudeApiClient] 已配置，Base URL: ${config.baseUrl}`);
+        this.logService.info(`[ClaudeApiClient] 已配置，Base URL: ${config.baseUrl}, 超时: ${this.config.timeout! / 1000}s`);
     }
 
     resetConfig(): void {

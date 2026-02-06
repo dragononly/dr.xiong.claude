@@ -1,3 +1,4 @@
+// @ts-nocheck
 //!!! DO NOT modify, this file was COPIED from 'microsoft/vscode'
 
 /*---------------------------------------------------------------------------------------------

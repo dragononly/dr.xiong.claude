@@ -71,6 +71,7 @@ export abstract class BaseTransport {
   protected readonly fromHost = new AsyncQueue<ExtensionToWebViewMessage>();
   protected readonly streams = new Map<string, AsyncQueue<any>>();
   protected readonly outstandingRequests = new Map<string, RequestHandler>();
+  private readonly requestTimeoutMs = 60000;
 
   constructor(
     protected readonly atMentionEvents: EventEmitter<string>,
@@ -300,6 +301,8 @@ export abstract class BaseTransport {
       apiKey: string | null;
       baseUrl: string | null;
       claudeCliPath?: string | null;
+      requestTimeout?: number;
+      proxyUrl?: string;
       isConfigured: boolean;
       /** 存储模式：secretStorage（安全存储）或 globalState（备用存储） */
       storageMode?: 'secretStorage' | 'globalState';
@@ -327,6 +330,20 @@ export abstract class BaseTransport {
    */
   setClaudeCliPath(cliPath: string): Promise<{ success: boolean; error?: string }> {
     return this.sendRequest({ type: "set_claude_cli_path", cliPath });
+  }
+
+  /**
+   * 设置请求超时时间
+   */
+  setRequestTimeout(timeout: number): Promise<{ success: boolean; error?: string }> {
+    return this.sendRequest({ type: "set_request_timeout", timeout });
+  }
+
+  /**
+   * 设置网络代理
+   */
+  setProxyUrl(proxyUrl: string): Promise<{ success: boolean; error?: string }> {
+    return this.sendRequest({ type: "set_proxy_url", proxyUrl });
   }
 
   /**
@@ -481,7 +498,25 @@ export abstract class BaseTransport {
       abortSignal.addEventListener("abort", abortHandler, { once: true });
 
     return new Promise<TResponse>((resolve, reject) => {
-      this.outstandingRequests.set(requestId, { resolve, reject });
+      const timeoutId = setTimeout(() => {
+        const handler = this.outstandingRequests.get(requestId);
+        if (!handler) return;
+        handler.reject(new Error(`Request timeout after ${this.requestTimeoutMs}ms: ${request.type}`));
+        this.outstandingRequests.delete(requestId);
+        this.cancelRequest(requestId);
+      }, this.requestTimeoutMs);
+
+      this.outstandingRequests.set(requestId, {
+        resolve: (value: any) => {
+          clearTimeout(timeoutId);
+          resolve(value);
+        },
+        reject: (error: Error) => {
+          clearTimeout(timeoutId);
+          reject(error);
+        }
+      });
+
       this.send({ type: "request", channelId, requestId, request });
     }).finally(() => {
       if (abortSignal) abortSignal.removeEventListener("abort", abortHandler);
@@ -545,9 +580,17 @@ export abstract class BaseTransport {
       }
     } catch (error) {
       for (const stream of this.streams.values()) stream.error(error);
+      for (const handler of this.outstandingRequests.values()) {
+        handler.reject(error instanceof Error ? error : new Error(String(error)));
+      }
+      this.outstandingRequests.clear();
     } finally {
       for (const stream of this.streams.values()) stream.done();
       this.streams.clear();
+      for (const handler of this.outstandingRequests.values()) {
+        handler.reject(new Error("Transport closed"));
+      }
+      this.outstandingRequests.clear();
     }
   }
 

@@ -72,9 +72,9 @@ const TIMEOUT_PRESETS = {
 };
 
 /**
- * 最大超时时间（10分钟）
+ * 最大超时时间（60秒）
  */
-const MAX_TIMEOUT = 600000;
+const MAX_TIMEOUT = 60000;
 
 /**
  * 最大输出大小（512KB）

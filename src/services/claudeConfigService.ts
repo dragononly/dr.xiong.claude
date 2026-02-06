@@ -192,17 +192,14 @@ export class ClaudeConfigService implements IClaudeConfigService {
 
     /**
      * 获取 API Key
-     * 仅从 VSCode 配置 (xiong.apiKey) 读取
+     * 统一从 ~/.claude/settings.json 读取
      */
     async getApiKey(): Promise<string | null> {
-        const config = vscode.workspace.getConfiguration('xiong');
-        const vscodeApiKey = config.get<string>('apiKey');
-        if (vscodeApiKey && vscodeApiKey.trim() !== '') {
-            console.log('[ClaudeConfigService] 从 VSCode 配置 (xiong.apiKey) 读取 API Key 成功');
-            return vscodeApiKey.trim();
+        const settings = this.readSettings();
+        const apiKey = settings.apiKey || settings.env?.ANTHROPIC_AUTH_TOKEN;
+        if (apiKey && apiKey.trim() !== '') {
+            return apiKey.trim();
         }
-
-        console.log('[ClaudeConfigService] 没有找到 API Key (xiong.apiKey 未设置)');
         return null;
     }
 
@@ -218,10 +215,8 @@ export class ClaudeConfigService implements IClaudeConfigService {
     }
 
     /**
-     * 设置 API Key（带验证）
-     * 同时保存到：
-     * 1. VSCode 配置 (xiong.apiKey) - 主要读取来源
-     * 2. ~/.claude/settings.json - 供 Claude Code CLI 使用
+     * 设置 API Key
+     * 统一保存到 ~/.claude/settings.json
      */
     async setApiKey(apiKey: string): Promise<void> {
         if (!apiKey || apiKey.trim() === '') {
@@ -230,12 +225,7 @@ export class ClaudeConfigService implements IClaudeConfigService {
 
         const trimmedKey = apiKey.trim();
 
-        // 1. 保存到 VSCode 配置 (xiong.apiKey)
-        const config = vscode.workspace.getConfiguration('xiong');
-        await config.update('apiKey', trimmedKey, vscode.ConfigurationTarget.Global);
-        console.log('[ClaudeConfigService] API Key 已保存到 VSCode 配置 (xiong.apiKey)');
-
-        // 2. 同时保存到 settings.json (供 Claude Code CLI 使用)
+        // 保存到 settings.json
         const settings = this.readSettings();
         settings.apiKey = trimmedKey;
         delete settings.primaryApiKey;
@@ -246,51 +236,40 @@ export class ClaudeConfigService implements IClaudeConfigService {
         delete settings.ANTHROPIC_AUTH_TOKEN;
         settings.CLAUDE_CODE_ATTRIBUTION_HEADER = "0";
         this.writeSettings(settings);
-        console.log('[ClaudeConfigService] API Key 已同步到 ~/.claude/settings.json');
 
-        // 3. 同步到 Claudix 环境变量 (供 CLI/SDK 读取)
+        // 同步到环境变量 (供 CLI/SDK 读取)
         await this.setXiongEnvVar('ANTHROPIC_AUTH_TOKEN', trimmedKey);
 
-        // 验证：从 VSCode 配置重新读取确认
+        // 验证
         const savedKey = await this.getApiKey();
         if (savedKey !== trimmedKey) {
-            throw new Error('API Key 保存验证失败：保存后读取的值与输入不匹配');
+            throw new Error('API Key 保存验证失败');
         }
 
-        console.log('[ClaudeConfigService] API Key 已保存并验证成功');
+        console.log('[ClaudeConfigService] API Key 已保存到 ~/.claude/settings.json');
     }
 
     /**
      * 获取 Base URL
-     * 仅从 VSCode 配置 (xiong.baseUrl) 读取
+     * 统一从 ~/.claude/settings.json 读取
      */
     async getBaseUrl(): Promise<string | null> {
-        const config = vscode.workspace.getConfiguration('xiong');
-        const vscodeBaseUrl = config.get<string>('baseUrl');
-        if (vscodeBaseUrl && vscodeBaseUrl.trim() !== '') {
-            console.log('[ClaudeConfigService] 从 VSCode 配置 (xiong.baseUrl) 读取 Base URL 成功');
-            return vscodeBaseUrl.trim();
+        const settings = this.readSettings();
+        const baseUrl = settings.baseUrl || settings.env?.ANTHROPIC_BASE_URL;
+        if (baseUrl && baseUrl.trim() !== '') {
+            return baseUrl.trim();
         }
-
-        console.log('[ClaudeConfigService] 没有找到 Base URL (xiong.baseUrl 未设置)');
         return null;
     }
 
     /**
-     * 设置 Base URL（带验证）
-     * 同时保存到：
-     * 1. VSCode 配置 (xiong.baseUrl) - 主要读取来源
-     * 2. ~/.claude/settings.json - 供 Claude Code CLI 使用
+     * 设置 Base URL
+     * 统一保存到 ~/.claude/settings.json
      */
     async setBaseUrl(baseUrl: string): Promise<void> {
         const trimmedUrl = baseUrl.trim();
 
-        // 1. 保存到 VSCode 配置 (xiong.baseUrl)
-        const config = vscode.workspace.getConfiguration('xiong');
-        await config.update('baseUrl', trimmedUrl, vscode.ConfigurationTarget.Global);
-        console.log('[ClaudeConfigService] Base URL 已保存到 VSCode 配置 (xiong.baseUrl)');
-
-        // 2. 同时保存到 settings.json (供 Claude Code CLI 使用)
+        // 保存到 settings.json
         const settings = this.readSettings();
         settings.baseUrl = trimmedUrl;
         if (!settings.env || typeof settings.env !== 'object') {
@@ -300,18 +279,17 @@ export class ClaudeConfigService implements IClaudeConfigService {
         delete settings.ANTHROPIC_BASE_URL;
         settings.CLAUDE_CODE_ATTRIBUTION_HEADER = "0";
         this.writeSettings(settings);
-        console.log('[ClaudeConfigService] Base URL 已同步到 ~/.claude/settings.json');
 
-        // 3. 同步到 Claudix 环境变量 (供 CLI/SDK 读取)
+        // 同步到环境变量 (供 CLI/SDK 读取)
         await this.setXiongEnvVar('ANTHROPIC_BASE_URL', trimmedUrl);
 
-        // 验证：从 VSCode 配置重新读取确认
+        // 验证
         const savedUrl = await this.getBaseUrl();
         if (savedUrl !== trimmedUrl) {
             throw new Error('Base URL 保存验证失败');
         }
 
-        console.log('[ClaudeConfigService] Base URL 已保存并验证成功');
+        console.log('[ClaudeConfigService] Base URL 已保存到 ~/.claude/settings.json');
     }
 
     /**

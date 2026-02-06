@@ -2,7 +2,7 @@
   "name": "claude-dr-xiong",
   "displayName": "Dr-XIONG Claude",
   "description": "Dr-XIONG Claude for VSCode. Bring the power of Claude AI assistant directly into your coding environment. Now with GLM-powered image recognition!",
-  "version": "0.8.47",
+  "version": "0.8.53",
   "publisher": "drxiong",
   "engines": {
     "vscode": "^1.98.0",
@@ -62,6 +62,22 @@
           "markdownDescription": "启用图片预处理（使用 GLM 识别图片后再发送给 Claude）",
           "scope": "application",
           "order": 11
+        },
+        "xiong.requestTimeout": {
+          "type": "number",
+          "default": 60,
+          "minimum": 30,
+          "maximum": 600,
+          "markdownDescription": "API 请求超时时间（秒）。默认 60 秒，范围 30-600 秒",
+          "scope": "application",
+          "order": 12
+        },
+        "xiong.proxyUrl": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "网络代理地址。支持 HTTP/HTTPS/SOCKS5 代理，如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:1080`",
+          "scope": "application",
+          "order": 13
         },
         "xiong.environmentVariables": {
           "type": "array",
@@ -162,7 +178,7 @@
     "prettier": "^3.7.4",
     "tailwindcss": "^4.1.17",
     "tsx": "^4.21.0",
-    "typescript": "^5.9.3",
+    "typescript": "^5.7.3",
     "vite": "^7.2.7",
     "vite-plugin-svg-icons": "^2.0.1",
     "vitest": "^4.0.15",

@@ -17,5 +17,5 @@
     "types": ["node", "vscode"]
   },
   "include": ["src/**/*", "types/**/*"],
-  "exclude": ["node_modules", "dist", "**/*.spec.ts", "src/webview/**", "src/webview.react.backup/**"]
+  "exclude": ["node_modules", "dist", "**/*.spec.ts", "src/webview/**", "src/webview.react.backup/**", "src/base/**"]
 }

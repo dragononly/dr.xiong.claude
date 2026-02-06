@@ -9,7 +9,7 @@
 
 import { createDecorator } from '../di/instantiation';
 import { ILogService } from './logService';
-import { IGLMClient } from './ai/GLMClient';
+import { IGLMClient, GLMMessage } from './ai/GLMClient';
 
 // 本地定义 AttachmentPayload，避免循环依赖
 export interface AttachmentPayload {

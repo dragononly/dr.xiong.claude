@@ -83,6 +83,12 @@ export class Session {
   private lastSentSelection?: SelectionRange;
   private effectCleanup?: () => void;
 
+  // 消息活动超时检测
+  private lastMessageTime: number = 0;
+  private activityCheckTimer?: ReturnType<typeof setInterval>;
+  private readonly ACTIVITY_TIMEOUT_MS = 30000; // 30秒无消息则认为卡住
+  private readonly ACTIVITY_CHECK_INTERVAL = 5000; // 每5秒检查一次
+
   readonly connection = signal<BaseTransport | undefined>(undefined);
 
   readonly busy = signal(false);
@@ -273,6 +279,9 @@ export class Session {
     this.isExplicit(false);
     this.lastModifiedTime(Date.now());
     this.busy(true);
+
+    // 启动活动检测，防止工具调用后卡住
+    this.startActivityCheck();
 
     try {
       const channelId = this.claudeChannelId();
@@ -497,6 +506,9 @@ export class Session {
   }
 
   dispose(): void {
+    // 停止活动检测定时器
+    this.stopActivityCheck();
+
     // 已移除自动同步定时器，无需停止
     // 同步最终 usage（异步，不阻塞）
     this.syncUsageToBackend().catch(err => {
@@ -505,6 +517,76 @@ export class Session {
 
     if (this.effectCleanup) {
       this.effectCleanup();
+    }
+  }
+
+  /**
+   * 启动活动检测定时器
+   * 当 busy 状态下长时间没有收到消息时，自动发送继续消息
+   */
+  private startActivityCheck(): void {
+    // 如果已有定时器，不重复启动
+    if (this.activityCheckTimer) {
+      return;
+    }
+
+    this.lastMessageTime = Date.now();
+    console.log('[Session] 启动活动检测定时器');
+
+    this.activityCheckTimer = setInterval(() => {
+      // 只在 busy 状态下检测
+      if (!this.busy()) {
+        return;
+      }
+
+      const elapsed = Date.now() - this.lastMessageTime;
+      if (elapsed > this.ACTIVITY_TIMEOUT_MS) {
+        console.log(`[Session] 检测到 ${elapsed / 1000}s 无消息，可能卡住，尝试自动继续...`);
+        this.sendContinue();
+        // 重置时间，避免连续发送
+        this.lastMessageTime = Date.now();
+      }
+    }, this.ACTIVITY_CHECK_INTERVAL);
+  }
+
+  /**
+   * 停止活动检测定时器
+   */
+  private stopActivityCheck(): void {
+    if (this.activityCheckTimer) {
+      console.log('[Session] 停止活动检测定时器');
+      clearInterval(this.activityCheckTimer);
+      this.activityCheckTimer = undefined;
+    }
+  }
+
+  /**
+   * 发送继续消息
+   * 当检测到可能卡住时，自动发送一个继续消息触发 Claude 继续响应
+   */
+  private async sendContinue(): Promise<void> {
+    const channelId = this.claudeChannelId();
+    if (!channelId) {
+      console.log('[Session] sendContinue: 无活跃 channel，跳过');
+      return;
+    }
+
+    try {
+      const connection = await this.getConnection();
+      const continueMessage = {
+        type: 'user',
+        session_id: '',
+        parent_tool_use_id: null,
+        message: {
+          role: 'user',
+          content: [{ type: 'text', text: '继续' }]
+        }
+      };
+
+      console.log('[Session] 发送自动继续消息');
+      connection.sendInput(channelId, continueMessage, false);
+    } catch (error) {
+      console.error('[Session] sendContinue 失败:', error);
     }
   }
 
@@ -587,6 +669,9 @@ ${errorMsg}
     // 🔥 使用完整的消息处理流程
     console.log('[Session] processIncomingMessage 收到事件:', event?.type, event?.subtype, event);
 
+    // 更新最后消息时间，用于活动检测
+    this.lastMessageTime = Date.now();
+
     // 1. 获取当前消息数组（转为可变数组）
     const currentMessages = [...this.messages()] as Message[];
 
@@ -621,6 +706,8 @@ ${errorMsg}
     } else if (event?.type === 'result') {
       console.log('[Session] 收到 result 事件，触发 handleEndlessMode');
       this.busy(false);
+      // 停止活动检测定时器
+      this.stopActivityCheck();
       // 显示任务完成提示（保持显示直到用户发送新消息）
       this.taskJustCompleted(true);
 

@@ -106,7 +106,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import type { PermissionMode } from '../../../shared/permissions'
+import type { PermissionMode } from '@anthropic-ai/claude-agent-sdk'
 import { DropdownTrigger, DropdownItem, type DropdownItemData } from './Dropdown'
 
 interface Props {

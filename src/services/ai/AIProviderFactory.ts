@@ -72,6 +72,7 @@ export interface IAIProviderFactory {
 const MODEL_PROVIDER_MAP: Record<string, ProviderType> = {
     // Claude 模型（新版命名）
     'claude-opus-4-5-20251101': 'claude',
+    'claude-opus-4-6': 'claude',
     'claude-haiku-4-5-20251001': 'claude',
     'claude-sonnet-4-5-20250929': 'claude',
     // Claude 模型（旧版命名）

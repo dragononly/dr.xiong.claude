@@ -115,6 +115,7 @@ import {
 const MODEL_NAME_MAPPING: Record<string, string> = {
     // UI 模型 ID -> Anthropic API 完整模型 ID
     'claude-opus-4-5': 'claude-opus-4-5-20251101',
+    'claude-opus-4-6': 'claude-opus-4-6',
     'claude-sonnet-4-5': 'claude-sonnet-4-5-20250929',
     'claude-haiku-4-5': 'claude-haiku-4-5-20251001',
     // XiongGemini 模型 -> Claude 模型（通过 Opus 代理）
@@ -406,7 +407,7 @@ export class ClaudeAgentService implements IClaudeAgentService {
                         try {
                             this.transportMessage(
                                 message.channelId,
-                                message.message,
+                                message.message as any,
                                 message.done
                             );
                         } catch (error) {
@@ -1358,7 +1359,7 @@ export class ClaudeAgentService implements IClaudeAgentService {
         );
 
         this.logService.info(`[requestToolPermission] ✅ 收到权限响应: ${JSON.stringify(response.result)}`);
-        return response.result;
+        return response.result as any;
     }
 
     /**
